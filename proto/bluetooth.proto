@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+option go_package = "bluetooth/grpc";
+
+package grpc;
+
+message Device {
+    string name = 1;
+    string address = 2;
+
+    bool trusted = 3;
+    bool paired = 4;
+    bool connected = 5;
+
+    string icon = 6;
+}
+
+message Devices {
+    repeated Device devices = 1;
+}
+
+message Response {
+    bool success = 1;
+}
+
+message ConnectRequest {
+    string address = 1;
+}
+
+message DisconnectRequest {
+    string address = 1;
+}
+
+message Empty {}
+
+service Bluetooth {
+    rpc GetDevices (Empty) returns (Devices) {}
+    rpc ConnectDevice (ConnectRequest) returns (Response) {}
+    rpc DisconnectDevice (DisconnectRequest) returns (Response) {}
+}
