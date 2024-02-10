@@ -67,6 +67,7 @@ func (s *BluetoothServer) GetTrustedDevices(ctx context.Context, _ *btgrpc.Empty
 	if err != nil {
 		return devs, err
 	}
+	devs = &btgrpc.Devices{}
 	for _, rd := range rawDevs {
 		if rd != nil && rd.Properties.Trusted {
 			dev := deviceToGrpcDevice(rd)
