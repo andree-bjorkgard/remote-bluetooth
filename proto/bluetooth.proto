@@ -12,7 +12,9 @@ message Device {
     bool paired = 4;
     bool connected = 5;
 
-    string icon = 6;
+    string batteryStatus = 6;
+
+    string icon = 7;
 }
 
 message Devices {
@@ -34,7 +36,7 @@ message DisconnectRequest {
 message Empty {}
 
 service Bluetooth {
-    rpc GetDevices (Empty) returns (Devices) {}
+    rpc GetTrustedDevices (Empty) returns (Devices) {}
     rpc ConnectDevice (ConnectRequest) returns (Response) {}
     rpc DisconnectDevice (DisconnectRequest) returns (Response) {}
 }

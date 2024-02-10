@@ -8,6 +8,7 @@ import (
 
 	"github.com/muka/go-bluetooth/api"
 	"github.com/muka/go-bluetooth/bluez/profile/adapter"
+	"github.com/muka/go-bluetooth/bluez/profile/device"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -47,7 +48,7 @@ func (s *BluetoothServer) Start() error {
 		grpc.UnaryInterceptor(unaryServerInterceptor(config.NewConfig())),
 	}
 	grpcServer := grpc.NewServer(opts...)
-	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", s.port))
+	listener, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", s.port))
 
 	if err != nil {
 		return fmt.Errorf("Server.Start: %w", err)
@@ -59,17 +60,17 @@ func (s *BluetoothServer) Start() error {
 	return grpcServer.Serve(listener)
 }
 
-func (s *BluetoothServer) GetTrustedDevices(ctx context.Context) ([]*btgrpc.Device, error) {
-	var devs []*btgrpc.Device
+func (s *BluetoothServer) GetTrustedDevices(ctx context.Context, _ *btgrpc.Empty) (*btgrpc.Devices, error) {
+	var devs *btgrpc.Devices
 
 	rawDevs, err := s.adapter.GetDevices()
 	if err != nil {
-		return []*btgrpc.Device(nil), err
+		return devs, err
 	}
 	for _, rd := range rawDevs {
 		if rd != nil && rd.Properties.Trusted {
-			dev := &btgrpc.Device{Address: rd.Properties.Address, Name: rd.Properties.Name}
-			devs = append(devs, dev)
+			dev := deviceToGrpcDevice(rd)
+			devs.Devices = append(devs.Devices, dev)
 		}
 	}
 	return devs, nil
@@ -97,6 +98,25 @@ func (s *BluetoothServer) DisconnectFromDevice(ctx context.Context, device *btgr
 		return err
 	}
 	return nil
+}
+
+func deviceToGrpcDevice(d *device.Device1) *btgrpc.Device {
+	addr, _ := d.GetAddress()
+	name, _ := d.GetName()
+	trusted, _ := d.GetTrusted()
+	paired, _ := d.GetPaired()
+	connected, _ := d.GetConnected()
+	icon, _ := d.GetIcon()
+
+	return &btgrpc.Device{
+		Address:       addr,
+		Name:          name,
+		Trusted:       trusted,
+		Paired:        paired,
+		Connected:     connected,
+		Icon:          icon,
+		BatteryStatus: "",
+	}
 }
 
 func unaryServerInterceptor(cfg config.Config) grpc.UnaryServerInterceptor {
