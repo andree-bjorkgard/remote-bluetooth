@@ -8,6 +8,7 @@ import (
 
 	"github.com/muka/go-bluetooth/api"
 	"github.com/muka/go-bluetooth/bluez/profile/adapter"
+	"github.com/muka/go-bluetooth/bluez/profile/battery"
 	"github.com/muka/go-bluetooth/bluez/profile/device"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
@@ -15,6 +16,8 @@ import (
 	btgrpc "github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/config"
 )
+
+const BATTERY_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
 
 type BluetoothServer struct {
 	btgrpc.UnimplementedBluetoothServer
@@ -101,6 +104,27 @@ func (s *BluetoothServer) DisconnectFromDevice(ctx context.Context, device *btgr
 	return nil
 }
 
+func getBatteryStatus(dev *device.Device1) string {
+	for _, uuid := range dev.Properties.UUIDs {
+		if uuid == BATTERY_UUID {
+			b, err := battery.NewBattery1(dev.Path())
+			if err != nil {
+				log.Println("Error getting battery service:", err)
+				return ""
+			}
+			p, err := b.GetPercentage()
+			if err != nil {
+				log.Println("Error getting battery percentage:", err)
+				return ""
+			}
+
+			return fmt.Sprintf("%d", p)
+		}
+	}
+
+	return ""
+}
+
 func deviceToGrpcDevice(d *device.Device1) *btgrpc.Device {
 	addr, _ := d.GetAddress()
 	name, _ := d.GetName()
@@ -116,7 +140,7 @@ func deviceToGrpcDevice(d *device.Device1) *btgrpc.Device {
 		Paired:        paired,
 		Connected:     connected,
 		Icon:          icon,
-		BatteryStatus: "",
+		BatteryStatus: getBatteryStatus(d),
 	}
 }
 
