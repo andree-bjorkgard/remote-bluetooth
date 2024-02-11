@@ -53,7 +53,12 @@ func (s *DiscoveryService) listenForServers() (addr <-chan string, port int) {
 
 // client
 func (s *DiscoveryService) askForServers(broadcastIP net.IP, listenerPort int) error {
-	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", s.BroadcastPort))
+	port, err := util.GetFreePort()
+	if err != nil {
+		return fmt.Errorf("DiscoveryService.askForServers: %s", err)
+	}
+
+	pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		return fmt.Errorf("DiscoveryService.askForServers: error while listening for packet: %w", err)
 	}

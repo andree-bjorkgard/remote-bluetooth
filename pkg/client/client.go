@@ -55,6 +55,7 @@ func (c *Client) FindServers() {
 		panic(err)
 	}
 
+	var ignoreList []net.IP
 	var broadcastIPs []net.IP
 	for _, i := range ifs {
 		addr, err := i.Addrs()
@@ -65,6 +66,7 @@ func (c *Client) FindServers() {
 			ipAddr, ok := a.(*net.IPNet)
 			// Ignore loopback and ipv6 addresses
 			if ok && !ipAddr.IP.IsLoopback() && strings.Count(ipAddr.IP.String(), ":") < 2 {
+				ignoreList = append(ignoreList, ipAddr.IP)
 				broadcastIPs = append(broadcastIPs, subnetBroadcastIP(*ipAddr))
 			}
 		}
@@ -72,8 +74,22 @@ func (c *Client) FindServers() {
 
 	ch := discoveryService.Discover(broadcastIPs)
 
+main:
 	for {
 		addr := <-ch
+		addrSplit := strings.Split(addr, ":")
+		if len(addrSplit) != 2 {
+			log.Println("Invalid address: ", addr)
+			continue
+		}
+
+		for _, ip := range ignoreList {
+			if ip.String() == addrSplit[0] {
+				log.Println("Ignoring local address: ", addr)
+				continue main
+			}
+		}
+
 		bc, err := bluetooth.NewBluetoothClient(addr, c.cfg.AuthenticationSecret)
 		if err != nil {
 			log.Println("Error creating client: ", err)
