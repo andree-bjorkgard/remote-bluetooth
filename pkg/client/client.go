@@ -1,6 +1,7 @@
 package client
 
 import (
+	"errors"
 	"log"
 	"net"
 	"strings"
@@ -9,6 +10,10 @@ import (
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/discovery"
 	"github.com/andree-bjorkgard/remote-bluetooth/pkg/config"
+)
+
+var (
+	ErrServerNotFound = errors.New("server not found")
 )
 
 type Device struct {
@@ -85,6 +90,24 @@ func (c *Client) FindServers() {
 			c.channel <- DeviceEvent{Server: addr, Device: grpcDeviceToClientDevice(d)}
 		}
 	}
+}
+
+func (c *Client) ConnectToDevice(server, address string) error {
+	bc, ok := c.connections[server]
+	if !ok {
+		return ErrServerNotFound
+	}
+
+	return bc.ConnectToDevice(address)
+}
+
+func (c *Client) DisconnectFromDevice(server, address string) error {
+	bc, ok := c.connections[server]
+	if !ok {
+		return ErrServerNotFound
+	}
+
+	return bc.DisconnectFromDevice(address)
 }
 
 func (c *Client) GetDeviceEventsChannel() <-chan DeviceEvent {

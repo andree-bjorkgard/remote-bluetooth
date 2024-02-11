@@ -5,6 +5,7 @@ go 1.21.5
 require (
 	github.com/joho/godotenv v1.5.1
 	github.com/muka/go-bluetooth v0.0.0-20221213043340-85dc80edc4e1
+	github.com/sirupsen/logrus v1.6.0
 	google.golang.org/grpc v1.60.1
 	google.golang.org/protobuf v1.32.0
 )
@@ -14,7 +15,6 @@ require (
 	github.com/godbus/dbus/v5 v5.0.3 // indirect
 	github.com/golang/protobuf v1.5.3 // indirect
 	github.com/konsorten/go-windows-terminal-sequences v1.0.3 // indirect
-	github.com/sirupsen/logrus v1.6.0 // indirect
 	golang.org/x/net v0.16.0 // indirect
 	golang.org/x/sys v0.13.0 // indirect
 	golang.org/x/text v0.13.0 // indirect
