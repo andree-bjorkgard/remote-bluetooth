@@ -1,9 +1,10 @@
-package client
+package bluetooth
 
 import (
 	"context"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	btgrpc "github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
@@ -18,6 +19,7 @@ type BluetoothClient struct {
 
 func NewBluetoothClient(addr string, authorization string) (*BluetoothClient, error) {
 	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithUnaryInterceptor(unaryClientInterceptor(authorization)),
 	}
 	conn, err := grpc.Dial(addr, opts...)
@@ -34,7 +36,7 @@ func (c *BluetoothClient) Close() error {
 }
 
 func (c *BluetoothClient) GetTrustedDevices() ([]*btgrpc.Device, error) {
-	devs, err := c.client.GetDevices(context.Background(), &btgrpc.Empty{})
+	devs, err := c.client.GetTrustedDevices(context.Background(), &btgrpc.Empty{})
 	if err != nil {
 		return nil, err
 	}

@@ -27,7 +27,7 @@ func NewDiscoveryService(broadcastPort int, broadcastMessage, broadcastServerRes
 
 // Client
 func (s *DiscoveryService) listenForServers() (addr <-chan string, port int) {
-	ch := make(chan string)
+	ch := make(chan string, 10)
 	port, err := util.GetFreePort()
 	if err != nil {
 		log.Fatalf("DiscoveryService.listenForServers: %s", err)

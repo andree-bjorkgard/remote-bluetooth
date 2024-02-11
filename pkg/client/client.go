@@ -5,17 +5,46 @@ import (
 	"net"
 	"strings"
 
-	"github.com/andree-bjorkgard/remote-bluetooth/internal/config"
+	"github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth"
+	"github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/discovery"
+	"github.com/andree-bjorkgard/remote-bluetooth/pkg/config"
 )
 
-func getClient(cfg config.Config) {
+type Device struct {
+	Name          string
+	Address       string
+	Trusted       bool
+	Paired        bool
+	Connected     bool
+	BatteryStatus string
+	Icon          string
+}
+
+type DeviceEvent struct {
+	Server string
+	Device Device
+}
+
+type Client struct {
+	cfg         config.Config
+	connections map[string]*bluetooth.BluetoothClient
+	channel     chan DeviceEvent
+}
+
+func NewClient(cfg config.Config) *Client {
+	ch := make(chan DeviceEvent, 20)
+
+	return &Client{cfg: cfg, channel: ch, connections: make(map[string]*bluetooth.BluetoothClient)}
+}
+
+func (c *Client) FindServers() {
 	ifs, err := net.Interfaces()
 	if err != nil {
 		panic(err)
 	}
 
-	discoveryService := discovery.NewDiscoveryService(cfg.BroadcastPort, cfg.BroadcastMessage, cfg.BroadcastServerResponse)
+	discoveryService := discovery.NewDiscoveryService(c.cfg.BroadcastPort, c.cfg.BroadcastMessage, c.cfg.BroadcastServerResponse)
 
 	if err != nil {
 		panic(err)
@@ -39,7 +68,38 @@ func getClient(cfg config.Config) {
 	ch := discoveryService.Discover(broadcastIPs)
 
 	for {
-		log.Println(<-ch)
+		addr := <-ch
+		bc, err := bluetooth.NewBluetoothClient(addr, c.cfg.AuthenticationSecret)
+		if err != nil {
+			log.Println("Error creating client: ", err)
+			continue
+		}
+
+		c.connections[addr] = bc
+		ds, err := bc.GetTrustedDevices()
+		if err != nil {
+			log.Println("Error getting trusted devices: ", err)
+			continue
+		}
+		for _, d := range ds {
+			c.channel <- DeviceEvent{Server: addr, Device: grpcDeviceToClientDevice(d)}
+		}
+	}
+}
+
+func (c *Client) GetDeviceEventsChannel() <-chan DeviceEvent {
+	return c.channel
+}
+
+func grpcDeviceToClientDevice(d *grpc.Device) Device {
+	return Device{
+		Name:          d.Name,
+		Address:       d.Address,
+		Trusted:       d.Trusted,
+		Paired:        d.Paired,
+		Connected:     d.Connected,
+		BatteryStatus: d.BatteryStatus,
+		Icon:          d.Icon,
 	}
 }
 
