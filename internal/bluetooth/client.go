@@ -2,12 +2,18 @@ package bluetooth
 
 import (
 	"context"
+	"errors"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
 	btgrpc "github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
+)
+
+var (
+	ErrConnectingFailed    = errors.New("connecting to device failed")
+	ErrDisconnectingFailed = errors.New("disconnecting to device failed")
 )
 
 type BluetoothClient struct {
@@ -44,19 +50,27 @@ func (c *BluetoothClient) GetTrustedDevices() ([]*btgrpc.Device, error) {
 	return devs.Devices, nil
 }
 
-func (c *BluetoothClient) ConnectDevice(mac string) error {
-	_, err := c.client.ConnectDevice(context.Background(), &btgrpc.ConnectRequest{Address: mac})
+func (c *BluetoothClient) ConnectToDevice(mac string) error {
+	r, err := c.client.ConnectToDevice(context.Background(), &btgrpc.ConnectRequest{Address: mac})
 	if err != nil {
 		return err
+	}
+
+	if !r.Success {
+		return ErrConnectingFailed
 	}
 
 	return nil
 }
 
-func (c *BluetoothClient) DisconnectDevice(mac string) error {
-	_, err := c.client.DisconnectDevice(context.Background(), &btgrpc.DisconnectRequest{Address: mac})
+func (c *BluetoothClient) DisconnectFromDevice(mac string) error {
+	r, err := c.client.DisconnectFromDevice(context.Background(), &btgrpc.DisconnectRequest{Address: mac})
 	if err != nil {
 		return err
+	}
+
+	if !r.Success {
+		return ErrDisconnectingFailed
 	}
 
 	return nil
