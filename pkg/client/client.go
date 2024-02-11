@@ -159,3 +159,31 @@ func subnetBroadcastIP(ipnet net.IPNet) net.IP {
 
 	return net.IP(byteBroadCastIP)
 }
+
+func (d *Device) GetAlias() (string, error) {
+	return d.Name, nil
+}
+
+func (d *Device) GetAddress() (string, error) {
+	return d.Address, nil
+}
+
+func (d *Device) GetTrusted() (bool, error) {
+	return d.Trusted, nil
+}
+
+func (d *Device) GetPaired() (bool, error) {
+	return d.Paired, nil
+}
+
+func (d *Device) GetConnected() (bool, error) {
+	return d.Connected, nil
+}
+
+func (d *Device) GetBatteryStatus() (string, error) {
+	return d.BatteryStatus, nil
+}
+
+func (d *Device) GetIcon() (string, error) {
+	return d.Icon, nil
+}
