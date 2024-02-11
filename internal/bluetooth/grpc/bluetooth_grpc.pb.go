@@ -23,8 +23,8 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type BluetoothClient interface {
 	GetTrustedDevices(ctx context.Context, in *Empty, opts ...grpc.CallOption) (*Devices, error)
-	ConnectDevice(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*Response, error)
-	DisconnectDevice(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*Response, error)
+	ConnectToDevice(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*Response, error)
+	DisconnectFromDevice(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*Response, error)
 }
 
 type bluetoothClient struct {
@@ -44,18 +44,18 @@ func (c *bluetoothClient) GetTrustedDevices(ctx context.Context, in *Empty, opts
 	return out, nil
 }
 
-func (c *bluetoothClient) ConnectDevice(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*Response, error) {
+func (c *bluetoothClient) ConnectToDevice(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
-	err := c.cc.Invoke(ctx, "/grpc.Bluetooth/ConnectDevice", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/grpc.Bluetooth/ConnectToDevice", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *bluetoothClient) DisconnectDevice(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*Response, error) {
+func (c *bluetoothClient) DisconnectFromDevice(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*Response, error) {
 	out := new(Response)
-	err := c.cc.Invoke(ctx, "/grpc.Bluetooth/DisconnectDevice", in, out, opts...)
+	err := c.cc.Invoke(ctx, "/grpc.Bluetooth/DisconnectFromDevice", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -67,8 +67,8 @@ func (c *bluetoothClient) DisconnectDevice(ctx context.Context, in *DisconnectRe
 // for forward compatibility
 type BluetoothServer interface {
 	GetTrustedDevices(context.Context, *Empty) (*Devices, error)
-	ConnectDevice(context.Context, *ConnectRequest) (*Response, error)
-	DisconnectDevice(context.Context, *DisconnectRequest) (*Response, error)
+	ConnectToDevice(context.Context, *ConnectRequest) (*Response, error)
+	DisconnectFromDevice(context.Context, *DisconnectRequest) (*Response, error)
 	mustEmbedUnimplementedBluetoothServer()
 }
 
@@ -79,11 +79,11 @@ type UnimplementedBluetoothServer struct {
 func (UnimplementedBluetoothServer) GetTrustedDevices(context.Context, *Empty) (*Devices, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTrustedDevices not implemented")
 }
-func (UnimplementedBluetoothServer) ConnectDevice(context.Context, *ConnectRequest) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ConnectDevice not implemented")
+func (UnimplementedBluetoothServer) ConnectToDevice(context.Context, *ConnectRequest) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConnectToDevice not implemented")
 }
-func (UnimplementedBluetoothServer) DisconnectDevice(context.Context, *DisconnectRequest) (*Response, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DisconnectDevice not implemented")
+func (UnimplementedBluetoothServer) DisconnectFromDevice(context.Context, *DisconnectRequest) (*Response, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DisconnectFromDevice not implemented")
 }
 func (UnimplementedBluetoothServer) mustEmbedUnimplementedBluetoothServer() {}
 
@@ -116,38 +116,38 @@ func _Bluetooth_GetTrustedDevices_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Bluetooth_ConnectDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Bluetooth_ConnectToDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ConnectRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(BluetoothServer).ConnectDevice(ctx, in)
+		return srv.(BluetoothServer).ConnectToDevice(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/grpc.Bluetooth/ConnectDevice",
+		FullMethod: "/grpc.Bluetooth/ConnectToDevice",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(BluetoothServer).ConnectDevice(ctx, req.(*ConnectRequest))
+		return srv.(BluetoothServer).ConnectToDevice(ctx, req.(*ConnectRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Bluetooth_DisconnectDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+func _Bluetooth_DisconnectFromDevice_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(DisconnectRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(BluetoothServer).DisconnectDevice(ctx, in)
+		return srv.(BluetoothServer).DisconnectFromDevice(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/grpc.Bluetooth/DisconnectDevice",
+		FullMethod: "/grpc.Bluetooth/DisconnectFromDevice",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(BluetoothServer).DisconnectDevice(ctx, req.(*DisconnectRequest))
+		return srv.(BluetoothServer).DisconnectFromDevice(ctx, req.(*DisconnectRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -164,12 +164,12 @@ var Bluetooth_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _Bluetooth_GetTrustedDevices_Handler,
 		},
 		{
-			MethodName: "ConnectDevice",
-			Handler:    _Bluetooth_ConnectDevice_Handler,
+			MethodName: "ConnectToDevice",
+			Handler:    _Bluetooth_ConnectToDevice_Handler,
 		},
 		{
-			MethodName: "DisconnectDevice",
-			Handler:    _Bluetooth_DisconnectDevice_Handler,
+			MethodName: "DisconnectFromDevice",
+			Handler:    _Bluetooth_DisconnectFromDevice_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -37,6 +37,6 @@ message Empty {}
 
 service Bluetooth {
     rpc GetTrustedDevices (Empty) returns (Devices) {}
-    rpc ConnectDevice (ConnectRequest) returns (Response) {}
-    rpc DisconnectDevice (DisconnectRequest) returns (Response) {}
+    rpc ConnectToDevice (ConnectRequest) returns (Response) {}
+    rpc DisconnectFromDevice (DisconnectRequest) returns (Response) {}
 }

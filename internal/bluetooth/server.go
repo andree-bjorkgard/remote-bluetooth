@@ -80,28 +80,34 @@ func (s *BluetoothServer) GetTrustedDevices(ctx context.Context, _ *btgrpc.Empty
 	return devs, nil
 }
 
-func (s *BluetoothServer) ConnectToDevice(ctx context.Context, device *btgrpc.Device) error {
-	dev, err := s.adapter.GetDeviceByAddress(device.Address)
+func (s *BluetoothServer) ConnectToDevice(ctx context.Context, request *btgrpc.ConnectRequest) (*btgrpc.Response, error) {
+	resp := &btgrpc.Response{Success: false}
+	dev, err := s.adapter.GetDeviceByAddress(request.Address)
 	if err != nil {
-		return err
+		return resp, err
 	}
 	err = dev.Connect()
 	if err != nil {
-		return err
+		return resp, err
 	}
-	return nil
+
+	resp.Success = true
+	return resp, nil
 }
 
-func (s *BluetoothServer) DisconnectFromDevice(ctx context.Context, device *btgrpc.Device) error {
-	dev, err := s.adapter.GetDeviceByAddress(device.Address)
+func (s *BluetoothServer) DisconnectFromDevice(ctx context.Context, request *btgrpc.DisconnectRequest) (*btgrpc.Response, error) {
+	resp := &btgrpc.Response{Success: false}
+	dev, err := s.adapter.GetDeviceByAddress(request.Address)
 	if err != nil {
-		return err
+		return resp, err
 	}
 	err = dev.Disconnect()
 	if err != nil {
-		return err
+		return resp, err
 	}
-	return nil
+
+	resp.Success = true
+	return resp, err
 }
 
 func getBatteryStatus(dev *device.Device1) string {
