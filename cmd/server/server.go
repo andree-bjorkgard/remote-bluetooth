@@ -4,8 +4,8 @@ import (
 	"log"
 
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth"
-	"github.com/andree-bjorkgard/remote-bluetooth/internal/config"
 	"github.com/andree-bjorkgard/remote-bluetooth/internal/discovery"
+	"github.com/andree-bjorkgard/remote-bluetooth/pkg/config"
 	"github.com/sirupsen/logrus"
 )
 
@@ -17,7 +17,7 @@ func main() {
 
 	go discoveryService.StartServerAnnouncer(cfg.Port)
 
-	if err := bluetooth.NewBluetoothServer(cfg.Port, "").Start(); err != nil {
+	if err := bluetooth.NewBluetoothServer(cfg.Port, cfg.AdapterID).Start(); err != nil {
 		log.Println(err)
 	}
 }

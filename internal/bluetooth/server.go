@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc/metadata"
 
 	btgrpc "github.com/andree-bjorkgard/remote-bluetooth/internal/bluetooth/grpc"
-	"github.com/andree-bjorkgard/remote-bluetooth/internal/config"
+	"github.com/andree-bjorkgard/remote-bluetooth/pkg/config"
 )
 
 const BATTERY_UUID = "0000180f-0000-1000-8000-00805f9b34fb"
@@ -105,20 +105,22 @@ func (s *BluetoothServer) DisconnectFromDevice(ctx context.Context, device *btgr
 }
 
 func getBatteryStatus(dev *device.Device1) string {
-	for _, uuid := range dev.Properties.UUIDs {
-		if uuid == BATTERY_UUID {
-			b, err := battery.NewBattery1(dev.Path())
-			if err != nil {
-				log.Println("Error getting battery service:", err)
-				return ""
-			}
-			p, err := b.GetPercentage()
-			if err != nil {
-				log.Println("Error getting battery percentage:", err)
-				return ""
-			}
+	if dev.Properties.Connected {
+		for _, uuid := range dev.Properties.UUIDs {
+			if uuid == BATTERY_UUID {
+				b, err := battery.NewBattery1(dev.Path())
+				if err != nil {
+					log.Println("Error getting battery service:", err)
+					return ""
+				}
+				p, err := b.GetPercentage()
+				if err != nil {
+					log.Println("Error getting battery percentage:", err)
+					return ""
+				}
 
-			return fmt.Sprintf("%d", p)
+				return fmt.Sprintf("%d", p)
+			}
 		}
 	}
 
