@@ -28,7 +28,7 @@ type Device struct {
 
 type DeviceEvent struct {
 	Server string
-	Device Device
+	Device *Device
 }
 
 type Client struct {
@@ -130,8 +130,8 @@ func (c *Client) GetDeviceEventsChannel() <-chan DeviceEvent {
 	return c.channel
 }
 
-func grpcDeviceToClientDevice(d *grpc.Device) Device {
-	return Device{
+func grpcDeviceToClientDevice(d *grpc.Device) *Device {
+	return &Device{
 		Name:          d.Name,
 		Address:       d.Address,
 		Trusted:       d.Trusted,
