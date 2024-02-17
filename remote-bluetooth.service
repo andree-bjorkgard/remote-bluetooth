@@ -2,7 +2,7 @@
 Description=Remote bluetooth service
 
 [Service]
-ExecStart=%h/go/bin/remotebluetooth
+ExecStart=%h/go/bin/remote-bluetooth
 Restart=always
 RestartSec=300
 
