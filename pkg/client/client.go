@@ -18,6 +18,7 @@ var (
 
 type Device struct {
 	Name          string
+	Host          string
 	Address       string
 	Trusted       bool
 	Paired        bool
@@ -103,7 +104,7 @@ main:
 			continue
 		}
 		for _, d := range ds {
-			c.channel <- DeviceEvent{Server: addr, Device: grpcDeviceToClientDevice(d)}
+			c.channel <- DeviceEvent{Server: addr, Device: grpcDeviceToClientDevice(d, addr)}
 		}
 	}
 }
@@ -130,9 +131,10 @@ func (c *Client) GetDeviceEventsChannel() <-chan DeviceEvent {
 	return c.channel
 }
 
-func grpcDeviceToClientDevice(d *grpc.Device) *Device {
+func grpcDeviceToClientDevice(d *grpc.Device, host string) *Device {
 	return &Device{
 		Name:          d.Name,
+		Host:          host,
 		Address:       d.Address,
 		Trusted:       d.Trusted,
 		Paired:        d.Paired,
@@ -160,12 +162,20 @@ func subnetBroadcastIP(ipnet net.IPNet) net.IP {
 	return net.IP(byteBroadCastIP)
 }
 
+func (d *Device) GetName() (string, error) {
+	return d.Name, nil
+}
+
 func (d *Device) GetAlias() (string, error) {
 	return d.Name, nil
 }
 
 func (d *Device) GetAddress() (string, error) {
 	return d.Address, nil
+}
+
+func (d *Device) GetHost() (string, error) {
+	return d.Host, nil
 }
 
 func (d *Device) GetTrusted() (bool, error) {
