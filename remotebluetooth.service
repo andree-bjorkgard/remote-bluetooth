@@ -1,0 +1,11 @@
+[Unit]
+Description=Remote bluetooth service
+
+[Service]
+ExecStart=%h/go/bin/remotebluetooth
+Restart=always
+RestartSec=300
+
+[Install]
+WantedBy=default.target
+
