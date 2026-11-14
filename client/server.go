@@ -247,6 +247,27 @@ func (s *serverConn) disconnect(ctx context.Context, address string) error {
 	return nil
 }
 
+func (s *serverConn) release(ctx context.Context, address string, hold time.Duration) error {
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+	secs := uint32((hold + time.Second - 1) / time.Second) // round up; 0 is the server default
+	_, err := s.rpc.Release(ctx, &pb.ReleaseRequest{Address: address, HoldSeconds: secs})
+	if err != nil {
+		return fmt.Errorf("release %s on %s: %w", address, s.name, fromStatus(err))
+	}
+	return nil
+}
+
+func (s *serverConn) restore(ctx context.Context, address string) error {
+	ctx, cancel := withDefaultTimeout(ctx)
+	defer cancel()
+	_, err := s.rpc.Restore(ctx, &pb.RestoreRequest{Address: address})
+	if err != nil {
+		return fmt.Errorf("restore %s on %s: %w", address, s.name, fromStatus(err))
+	}
+	return nil
+}
+
 func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return context.WithCancel(ctx)

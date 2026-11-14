@@ -36,6 +36,9 @@ var (
 	ErrUnknownServer = errors.New("client: unknown server")
 	// ErrServerUnavailable is returned when the server is not connected.
 	ErrServerUnavailable = errors.New("client: server unavailable")
+	// ErrNoAudio is returned when the server has no audio to release or
+	// restore for the device, or is already busy releasing another.
+	ErrNoAudio = errors.New("client: no audio to release")
 	// ErrDeviceNotFound is returned when the server has no such trusted device.
 	ErrDeviceNotFound = errors.New("client: device not found")
 )
@@ -296,6 +299,8 @@ func fromStatus(err error) error {
 		return nil
 	case codes.NotFound:
 		return fmt.Errorf("%w: %s", ErrDeviceNotFound, status.Convert(err).Message())
+	case codes.FailedPrecondition:
+		return fmt.Errorf("%w: %s", ErrNoAudio, status.Convert(err).Message())
 	case codes.Unavailable:
 		return fmt.Errorf("%w: %s", ErrServerUnavailable, status.Convert(err).Message())
 	case codes.DeadlineExceeded:

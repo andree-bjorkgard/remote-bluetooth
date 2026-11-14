@@ -29,7 +29,8 @@ type testServer struct {
 	stop    func()
 }
 
-func startServer(t *testing.T, secret, addr string, backend *fakebt.Backend) *testServer {
+// startServer starts a server; an optional fake audio backs Release/Restore.
+func startServer(t *testing.T, secret, addr string, backend *fakebt.Backend, audio ...*fakebt.Audio) *testServer {
 	t.Helper()
 	id, err := auth.New(secret)
 	if err != nil {
@@ -49,7 +50,11 @@ func startServer(t *testing.T, secret, addr string, backend *fakebt.Backend) *te
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := server.New(backend, nil, slog.New(slog.DiscardHandler))
+	var au server.Audio // stays a nil interface without a fake
+	if len(audio) > 0 {
+		au = audio[0]
+	}
+	srv := server.New(backend, au, slog.New(slog.DiscardHandler))
 	go srv.Run(ctx)
 	g := grpc.NewServer(grpc.Creds(credentials.NewTLS(id.ServerConfig())))
 	srv.Register(g)
