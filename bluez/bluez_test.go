@@ -2,6 +2,7 @@ package bluez
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/godbus/dbus/v5"
@@ -106,5 +107,73 @@ func TestWatcher(t *testing.T) {
 		deviceIface: {"Address": dbus.MakeVariant("AA:BB:CC:DD:EE:FF")},
 	})); len(got) != 0 {
 		t.Fatalf("child object: %+v", got)
+	}
+}
+
+func transportObjs(states ...string) map[dbus.ObjectPath]map[string]map[string]dbus.Variant {
+	objs := map[dbus.ObjectPath]map[string]map[string]dbus.Variant{
+		devPath: {deviceIface: {"Address": dbus.MakeVariant("AA:BB:CC:DD:EE:FF")}},
+	}
+	for i, s := range states {
+		objs[dbus.ObjectPath(fmt.Sprintf("%s/sep%d/fd0", devPath, i+1))] = map[string]map[string]dbus.Variant{
+			transportIface: {"State": dbus.MakeVariant(s)},
+		}
+	}
+	return objs
+}
+
+func TestAudioStateFromObjects(t *testing.T) {
+	cases := []struct {
+		name   string
+		states []string
+		want   AudioState
+	}{
+		{"none", nil, AudioNone},
+		{"idle", []string{"idle"}, AudioIdle},
+		{"active", []string{"active"}, AudioSending},
+		{"pending", []string{"pending"}, AudioSending},
+		{"one of two active", []string{"idle", "active"}, AudioSending},
+	}
+	for _, c := range cases {
+		if got := audioFromObjects(transportObjs(c.states...), devPath); got != c.want {
+			t.Errorf("%s: got %v want %v", c.name, got, c.want)
+		}
+	}
+	if AudioNone.String() != "none" || AudioIdle.String() != "idle" || AudioSending.String() != "sending" {
+		t.Errorf("String: %v %v %v", AudioNone, AudioIdle, AudioSending)
+	}
+}
+
+func TestWatcherTransport(t *testing.T) {
+	w := newWatcher("/org/bluez/hci0")
+	w.handle(added(map[string]map[string]dbus.Variant{
+		deviceIface: {"Address": dbus.MakeVariant("AA:BB:CC:DD:EE:FF")},
+	}))
+
+	tp := devPath + "/sep2/fd0"
+	state := func(s string) map[string]dbus.Variant { return map[string]dbus.Variant{"State": dbus.MakeVariant(s)} }
+
+	got := w.handle(sig(objectManager+".InterfacesAdded", "/", tp, map[string]map[string]dbus.Variant{transportIface: state("idle")}))
+	if len(got) != 1 || got[0].Device.Audio != AudioIdle {
+		t.Fatalf("transport added: %+v", got)
+	}
+
+	got = w.handle(sig(propertiesIface+".PropertiesChanged", tp, transportIface, state("active"), []string{}))
+	if len(got) != 1 || got[0].Device.Audio != AudioSending {
+		t.Fatalf("active: %+v", got)
+	}
+
+	if got := w.handle(sig(propertiesIface+".PropertiesChanged", tp, transportIface, state("active"), []string{})); len(got) != 0 {
+		t.Fatalf("same state: %+v", got)
+	}
+
+	got = w.handle(sig(objectManager+".InterfacesRemoved", "/", tp, []string{transportIface}))
+	if len(got) != 1 || got[0].Device.Audio != AudioNone {
+		t.Fatalf("transport removed: %+v", got)
+	}
+
+	other := dbus.ObjectPath("/org/bluez/hci0/dev_11_22_33_44_55_66/sep1/fd0")
+	if got := w.handle(sig(objectManager+".InterfacesAdded", "/", other, map[string]map[string]dbus.Variant{transportIface: state("active")})); len(got) != 0 {
+		t.Fatalf("unknown device transport: %+v", got)
 	}
 }

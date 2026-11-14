@@ -19,6 +19,7 @@ const (
 	adapterIface    = "org.bluez.Adapter1"
 	deviceIface     = "org.bluez.Device1"
 	batteryIface    = "org.bluez.Battery1"
+	transportIface  = "org.bluez.MediaTransport1"
 	objectManager   = "org.freedesktop.DBus.ObjectManager"
 	propertiesIface = "org.freedesktop.DBus.Properties"
 
@@ -47,6 +48,40 @@ func NormalizeAddress(addr string) (string, error) {
 	return a, nil
 }
 
+// AudioState is whether a device is receiving A2DP audio from this machine.
+type AudioState uint8
+
+const (
+	// AudioNone means the device has no media transport.
+	AudioNone AudioState = iota
+	// AudioIdle means a transport exists but is not streaming.
+	AudioIdle
+	// AudioSending means a transport is pending or active.
+	AudioSending
+)
+
+func (s AudioState) String() string {
+	switch s {
+	case AudioIdle:
+		return "idle"
+	case AudioSending:
+		return "sending"
+	}
+	return "none"
+}
+
+// audioFromStates folds a set of transport states into one AudioState.
+func audioFromStates(states []string) AudioState {
+	out := AudioNone
+	for _, st := range states {
+		if st == "active" || st == "pending" {
+			return AudioSending
+		}
+		out = AudioIdle
+	}
+	return out
+}
+
 // Device is a snapshot of one BlueZ device.
 type Device struct {
 	Address   string
@@ -61,6 +96,9 @@ type Device struct {
 	HasBattery bool
 	// BatteryPercent is the battery level 0-100, valid when HasBattery.
 	BatteryPercent uint8
+
+	// Audio is the A2DP streaming state of the device.
+	Audio AudioState
 }
 
 // Adapter is one local Bluetooth adapter.
@@ -120,16 +158,7 @@ func (a *Adapter) Devices(ctx context.Context) ([]Device, error) {
 		return nil, err
 	}
 	var devs []Device
-	for path, ifaces := range objs {
-		if !a.isDevicePath(path) {
-			continue
-		}
-		props, ok := ifaces[deviceIface]
-		if !ok {
-			continue
-		}
-		d := deviceFromProps(props)
-		applyBattery(&d, ifaces[batteryIface])
+	for _, d := range a.devicesFromObjects(objs) {
 		devs = append(devs, d)
 	}
 	sort.Slice(devs, func(i, j int) bool { return devs[i].Address < devs[j].Address })
@@ -142,17 +171,50 @@ func (a *Adapter) Device(ctx context.Context, address string) (Device, error) {
 	if err != nil {
 		return Device{}, err
 	}
-	var props map[string]dbus.Variant
-	err = a.conn.Object(service, path).CallWithContext(ctx, propertiesIface+".GetAll", 0, deviceIface).Store(&props)
+	objs, err := managedObjects(ctx, a.conn)
 	if err != nil {
-		return Device{}, mapErr(err, addr)
+		return Device{}, err
 	}
-	d := deviceFromProps(props)
-	var bat map[string]dbus.Variant
-	if a.conn.Object(service, path).CallWithContext(ctx, propertiesIface+".GetAll", 0, batteryIface).Store(&bat) == nil {
-		applyBattery(&d, bat)
+	d, ok := a.devicesFromObjects(objs)[path]
+	if !ok {
+		return Device{}, fmt.Errorf("%w: device %s", ErrNotFound, addr)
 	}
 	return d, nil
+}
+
+// devicesFromObjects builds the devices directly under the adapter, keyed
+// by object path.
+func (a *Adapter) devicesFromObjects(objs map[dbus.ObjectPath]map[string]map[string]dbus.Variant) map[dbus.ObjectPath]Device {
+	devs := map[dbus.ObjectPath]Device{}
+	for path, ifaces := range objs {
+		if !a.isDevicePath(path) {
+			continue
+		}
+		props, ok := ifaces[deviceIface]
+		if !ok {
+			continue
+		}
+		d := deviceFromProps(props)
+		applyBattery(&d, ifaces[batteryIface])
+		d.Audio = audioFromObjects(objs, path)
+		devs[path] = d
+	}
+	return devs
+}
+
+// audioFromObjects derives the audio state of dev from the MediaTransport1
+// objects below its path.
+func audioFromObjects(objs map[dbus.ObjectPath]map[string]map[string]dbus.Variant, dev dbus.ObjectPath) AudioState {
+	var states []string
+	for path, ifaces := range objs {
+		props, ok := ifaces[transportIface]
+		if !ok || !strings.HasPrefix(string(path), string(dev)+"/") {
+			continue
+		}
+		st, _ := props["State"].Value().(string)
+		states = append(states, st)
+	}
+	return audioFromStates(states)
 }
 
 // Connect connects the device. Connecting an already connected device is
