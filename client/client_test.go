@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"reflect"
 	"testing"
 	"time"
 
@@ -199,5 +200,14 @@ func TestParseServers(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("got %v want %v", got, want)
 		}
+	}
+}
+
+func TestSameSubnetFirst(t *testing.T) {
+	_, lan, _ := net.ParseCIDR("192.168.0.72/24")
+	got := sameSubnetFirst([]string{"172.20.0.1:8829", "172.18.0.1:8829", "192.168.0.80:8829", "garbage"}, []*net.IPNet{lan})
+	want := []string{"192.168.0.80:8829", "172.20.0.1:8829", "172.18.0.1:8829", "garbage"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
 	}
 }

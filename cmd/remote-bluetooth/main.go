@@ -161,12 +161,7 @@ func serve(ctx context.Context, args []string) error {
 	go func() { errc <- srv.Run(ctx) }()
 	go func() { errc <- g.Serve(lis) }()
 	if !*noAnnounce {
-		go func() {
-			if err := discovery.Announce(ctx, *name, *port); err != nil {
-				// Static client configuration still works without mDNS.
-				log.Warn("mDNS announce failed", "err", err)
-			}
-		}()
+		go discovery.Announce(ctx, *name, *port, log)
 	}
 	log.Info("serving", "name", *name, "addr", lis.Addr().String(), "adapter", adapter.ID())
 

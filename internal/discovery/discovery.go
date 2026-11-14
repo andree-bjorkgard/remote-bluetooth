@@ -7,10 +7,14 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/libp2p/zeroconf/v2"
 )
@@ -32,15 +36,98 @@ func HostID() string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// recheck is how often Announce looks for changed interface addresses.
+var recheck = 30 * time.Second
+
 // Announce advertises a server named instance on port until ctx is done.
-func Announce(ctx context.Context, instance string, port int) error {
-	srv, err := zeroconf.Register(instance, ServiceType, domain, port, []string{"v=2", "host=" + HostID()}, nil)
-	if err != nil {
-		return fmt.Errorf("discovery: announce: %w", err)
+// It announces on the machine's physical network interfaces only, so
+// container bridges and other virtual interfaces never hand clients an
+// address they cannot reach, and announces again when those interfaces'
+// addresses change (a new Wi-Fi network, a new DHCP lease). Problems are
+// logged and retried; Announce returns when ctx is done.
+func Announce(ctx context.Context, instance string, port int, log *slog.Logger) {
+	tick := time.NewTicker(recheck)
+	defer tick.Stop()
+	var srv *zeroconf.Server
+	announced := ""
+	for {
+		ifaces := announceInterfaces()
+		if key := addrKey(ifaces); key != announced || srv == nil {
+			if srv != nil {
+				srv.Shutdown()
+				srv = nil
+			}
+			s, err := zeroconf.Register(instance, ServiceType, domain, port, []string{"v=2", "host=" + HostID()}, ifaces)
+			if err != nil {
+				log.Warn("mDNS announce failed, will retry", "err", err)
+			} else {
+				srv, announced = s, key
+				log.Info("announced with mDNS", "addrs", key)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			if srv != nil {
+				srv.Shutdown() // sends a goodbye so caches drop us right away
+			}
+			return
+		case <-tick.C:
+		}
 	}
-	<-ctx.Done()
-	srv.Shutdown() // sends a goodbye so caches drop us right away
-	return nil
+}
+
+// announceInterfaces lists the interfaces to announce on: up, multicast,
+// backed by hardware (/sys/class/net/<name>/device exists, which rules out
+// docker0, br-*, veth*, virbr*, VPN tunnels...) and holding an address.
+// Without any it falls back to every up multicast interface with an
+// address, e.g. inside a container.
+func announceInterfaces() []net.Interface {
+	all, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	var physical, usable []net.Interface
+	for _, ifi := range all {
+		if ifi.Flags&net.FlagUp == 0 || ifi.Flags&net.FlagMulticast == 0 || ifi.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if len(ifaceIPs(ifi)) == 0 {
+			continue
+		}
+		usable = append(usable, ifi)
+		if _, err := os.Stat(filepath.Join("/sys/class/net", ifi.Name, "device")); err == nil {
+			physical = append(physical, ifi)
+		}
+	}
+	if len(physical) > 0 {
+		return physical
+	}
+	return usable
+}
+
+// ifaceIPs are an interface's addresses worth announcing: not loopback and
+// not IPv6 link-local, which needs a zone clients do not know.
+func ifaceIPs(ifi net.Interface) []string {
+	addrs, _ := ifi.Addrs()
+	var ips []string
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || ipn.IP.IsLinkLocalUnicast() {
+			continue
+		}
+		ips = append(ips, ipn.IP.String())
+	}
+	return ips
+}
+
+// addrKey sums up the interfaces' addresses, to notice when they change.
+func addrKey(ifaces []net.Interface) string {
+	var parts []string
+	for _, ifi := range ifaces {
+		parts = append(parts, ifi.Name+"="+strings.Join(ifaceIPs(ifi), ","))
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, " ")
 }
 
 // Service is one server found on the network.

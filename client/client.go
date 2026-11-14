@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -186,7 +187,7 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		addrs := svc.Addrs
 		if !local {
-			addrs = withoutLocalIPs(addrs)
+			addrs = sameSubnetFirst(withoutLocalIPs(addrs), localNets())
 		}
 		if len(addrs) == 0 {
 			continue
@@ -337,6 +338,50 @@ func withoutLocalIPs(addrs []string) []string {
 		}
 		out = append(out, a)
 	}
+	return out
+}
+
+// localNets are the subnets of this machine's interfaces.
+func localNets() []*net.IPNet {
+	var nets []*net.IPNet
+	if ifAddrs, err := net.InterfaceAddrs(); err == nil {
+		for _, a := range ifAddrs {
+			if n, ok := a.(*net.IPNet); ok && !n.IP.IsLoopback() {
+				nets = append(nets, n)
+			}
+		}
+	}
+	return nets
+}
+
+// sameSubnetFirst moves addresses inside one of nets to the front, keeping
+// the order otherwise. gRPC tries a server's addresses in order, so one on
+// our own network is tried before, say, a Docker bridge address an older
+// server announced, which we can't reach.
+func sameSubnetFirst(addrs []string, nets []*net.IPNet) []string {
+	near := func(a string) bool {
+		host, _, err := net.SplitHostPort(a)
+		ip := net.ParseIP(host)
+		if err != nil || ip == nil {
+			return false
+		}
+		for _, n := range nets {
+			if n.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+	out := slices.Clone(addrs)
+	slices.SortStableFunc(out, func(a, b string) int {
+		switch na, nb := near(a), near(b); {
+		case na && !nb:
+			return -1
+		case nb && !na:
+			return 1
+		}
+		return 0
+	})
 	return out
 }
 
