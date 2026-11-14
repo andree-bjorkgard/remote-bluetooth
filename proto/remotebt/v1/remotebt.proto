@@ -19,11 +19,12 @@ service BluetoothService {
   // Disconnect disconnects a trusted device.
   rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
 
-  // Release makes this server drop a device and keep its hands off it for
-  // hold_seconds, so another host can take it.
+  // Release turns this host's audio profile for the device off, keeping the
+  // Bluetooth link up, for up to hold_seconds so another host can take the
+  // audio.
   rpc Release(ReleaseRequest) returns (ReleaseResponse);
 
-  // Restore ends a release early and reconnects the device.
+  // Restore ends a release early and puts the audio back as it was.
   rpc Restore(RestoreRequest) returns (RestoreResponse);
 }
 

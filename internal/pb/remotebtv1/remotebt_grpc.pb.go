@@ -42,10 +42,11 @@ type BluetoothServiceClient interface {
 	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error)
 	// Disconnect disconnects a trusted device.
 	Disconnect(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*DisconnectResponse, error)
-	// Release makes this server drop a device and keep its hands off it for
-	// hold_seconds, so another host can take it.
+	// Release turns this host's audio profile for the device off, keeping the
+	// Bluetooth link up, for up to hold_seconds so another host can take the
+	// audio.
 	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error)
-	// Restore ends a release early and reconnects the device.
+	// Restore ends a release early and puts the audio back as it was.
 	Restore(ctx context.Context, in *RestoreRequest, opts ...grpc.CallOption) (*RestoreResponse, error)
 }
 
@@ -141,10 +142,11 @@ type BluetoothServiceServer interface {
 	Connect(context.Context, *ConnectRequest) (*ConnectResponse, error)
 	// Disconnect disconnects a trusted device.
 	Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error)
-	// Release makes this server drop a device and keep its hands off it for
-	// hold_seconds, so another host can take it.
+	// Release turns this host's audio profile for the device off, keeping the
+	// Bluetooth link up, for up to hold_seconds so another host can take the
+	// audio.
 	Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error)
-	// Restore ends a release early and reconnects the device.
+	// Restore ends a release early and puts the audio back as it was.
 	Restore(context.Context, *RestoreRequest) (*RestoreResponse, error)
 	mustEmbedUnimplementedBluetoothServiceServer()
 }
