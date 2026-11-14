@@ -27,6 +27,7 @@ generate: $(TOOLS)
 install:
 	go install ./cmd/remote-bluetooth
 	mkdir -p $(UNIT_DIR)
+	rm -f $(UNIT_DIR)/remote-bluetooth.service # may be a symlink from v1
 	install -m 644 remote-bluetooth.service $(UNIT_DIR)/remote-bluetooth.service
 	systemctl --user daemon-reload
 	@echo "enable with: systemctl --user enable --now remote-bluetooth"
