@@ -43,6 +43,7 @@ Usage:
   remote-bluetooth connect     [flags] SERVER ADDR  connect a device on a server
   remote-bluetooth disconnect  [flags] SERVER ADDR  disconnect a device on a server
   remote-bluetooth play-here   [flags] ADDR         move the sound for a device to this machine
+  remote-bluetooth play-on     [flags] SERVER ADDR  move the sound for a device to a server
   remote-bluetooth gen-secret  [-force]             create the shared secret
 
 Every machine needs the same secret, in $REMOTE_BLUETOOTH_SECRET or
@@ -64,6 +65,7 @@ func main() {
 		"connect":    func(ctx context.Context, a []string) error { return control(ctx, "connect", a) },
 		"disconnect": func(ctx context.Context, a []string) error { return control(ctx, "disconnect", a) },
 		"play-here":  playHere,
+		"play-on":    playOn,
 		"gen-secret": genSecret,
 	}
 	name := os.Args[1]
@@ -402,35 +404,9 @@ func playHere(ctx context.Context, args []string) error {
 	defer cancel()
 	go func() { _ = c.Run(runCtx) }()
 
-	// Wait for the first server, then give the others a moment so every
-	// holder is known before PlayHere reads the device snapshot.
-	const quiet = 500 * time.Millisecond
-	deadline := time.NewTimer(*wait)
-	defer deadline.Stop()
-	var idle <-chan time.Time
-	waiting := true
-	for waiting {
-		select {
-		case ev, ok := <-c.Events():
-			if !ok {
-				return ctx.Err()
-			}
-			if ev.Type == client.ServerUp {
-				idle = time.After(quiet)
-			}
-		case <-idle:
-			waiting = false
-		case <-deadline.C:
-			waiting = false
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if err := settleServers(ctx, c, *wait); err != nil {
+		return err
 	}
-	// Keep draining events so the client's device snapshot stays live.
-	go func() {
-		for range c.Events() {
-		}
-	}()
 
 	sendingHere := func(ctx context.Context) bool {
 		d, err := adapter.Device(ctx, addr)
@@ -444,6 +420,69 @@ func playHere(ctx context.Context, args []string) error {
 		return err
 	}
 	fmt.Printf("sound moved here; %s let go and are back to normal\n", strings.Join(res.Released, ", "))
+	return nil
+}
+
+// settleServers waits for the first server, then gives the others a moment
+// so the device snapshot is complete, and keeps draining events afterwards
+// so the snapshot stays live.
+func settleServers(ctx context.Context, c *client.Client, wait time.Duration) error {
+	const quiet = 500 * time.Millisecond
+	deadline := time.NewTimer(wait)
+	defer deadline.Stop()
+	var idle <-chan time.Time
+	for {
+		select {
+		case ev, ok := <-c.Events():
+			if !ok {
+				return ctx.Err()
+			}
+			if ev.Type == client.ServerUp {
+				idle = time.After(quiet)
+			}
+			continue
+		case <-idle:
+		case <-deadline.C:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		go func() {
+			for range c.Events() {
+			}
+		}()
+		return nil
+	}
+}
+
+// playOn moves the sound for a device from this machine to a server: this
+// machine lets go until the server sends to it, then goes back to normal.
+func playOn(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("play-on", flag.ExitOnError)
+	cf := addClientFlags(fs)
+	wait := fs.Duration("wait", 5*time.Second, "how long to wait for servers to show up")
+	_ = fs.Parse(args)
+	if fs.NArg() != 2 {
+		return errors.New("usage: remote-bluetooth play-on SERVER ADDRESS")
+	}
+	server := fs.Arg(0)
+	addr, err := bluez.NormalizeAddress(fs.Arg(1))
+	if err != nil {
+		return err
+	}
+	c, err := cf.newClient()
+	if err != nil {
+		return err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { _ = c.Run(runCtx) }()
+	if err := settleServers(ctx, c, *wait); err != nil {
+		return err
+	}
+	if err := c.PlayOn(ctx, server, addr); err != nil {
+		return err
+	}
+	fmt.Printf("sound moved to %s; this machine is back to normal\n", server)
 	return nil
 }
 

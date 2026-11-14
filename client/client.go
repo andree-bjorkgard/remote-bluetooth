@@ -57,6 +57,9 @@ type Config struct {
 	// skipped by default because local devices are usually handled
 	// directly (see package bluez).
 	IncludeLocal bool
+	// LocalServer is the address of the server on this machine, used by
+	// PlayOn to let go here. Defaults to LocalServer().
+	LocalServer string
 	// Logger receives diagnostics. Defaults to discarding them.
 	Logger *slog.Logger
 }
@@ -127,6 +130,9 @@ func New(cfg Config) (*Client, error) {
 	}
 	if cfg.DisableDiscovery && len(cfg.Servers) == 0 {
 		return nil, errors.New("client: discovery disabled and no servers configured")
+	}
+	if cfg.LocalServer == "" {
+		cfg.LocalServer = LocalServer()
 	}
 	log := cfg.Logger
 	if log == nil {
