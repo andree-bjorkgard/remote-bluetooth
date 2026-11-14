@@ -550,38 +550,86 @@ func TestHoldExpiryRestores(t *testing.T) {
 	}
 }
 
+// fakeTimers replaces time.AfterFunc so hold timers fire only when a test
+// says so.
+type fakeTimers struct {
+	mu     sync.Mutex
+	timers []*fakeTimer
+}
+
+type fakeTimer struct {
+	d       time.Duration
+	f       func()
+	stopped bool
+}
+
+func (t *fakeTimer) Stop() bool { t.stopped = true; return true }
+
+func (ft *fakeTimers) afterFunc(d time.Duration, f func()) timer {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	t := &fakeTimer{d: d, f: f}
+	ft.timers = append(ft.timers, t)
+	return t
+}
+
+func (ft *fakeTimers) get(i int) *fakeTimer {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return ft.timers[i]
+}
+
+func (ft *fakeTimers) count() int {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	return len(ft.timers)
+}
+
 func TestReleaseTwiceExtendsHold(t *testing.T) {
 	f := standardFake("a2dp-sink")
 	m, _ := newTestManager(t, f, nil)
+	ft := &fakeTimers{}
+	m.afterFunc = ft.afterFunc
 	ctx := context.Background()
-	if err := m.Release(ctx, testAddr, 150*time.Millisecond); err != nil {
+	if err := m.Release(ctx, testAddr, 10*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(100 * time.Millisecond)
-	if err := m.Release(ctx, testAddr, 150*time.Millisecond); err != nil {
+	if err := m.Release(ctx, testAddr, 20*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.calledPrefix("pactl", "load-module"); n != 1 {
 		t.Errorf("load-module called %d times", n)
 	}
-	time.Sleep(100 * time.Millisecond) // 200 ms after first Release: first hold would have expired
+	if ft.count() != 2 {
+		t.Fatalf("%d timers armed, want 2", ft.count())
+	}
+	first, second := ft.get(0), ft.get(1)
+	if !first.stopped {
+		t.Error("first hold timer not stopped")
+	}
+	if second.d != 20*time.Second {
+		t.Errorf("second hold = %v, want 20s", second.d)
+	}
+	first.f() // the first hold's timer firing late must not restore
 	if !m.Released(testAddr) {
-		t.Fatal("hold not extended by second Release")
+		t.Fatal("first hold's timer ended the extended hold")
 	}
-	deadline := time.Now().Add(time.Second)
-	for m.Released(testAddr) && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
+	second.f()
 	if m.Released(testAddr) {
-		t.Fatal("extended hold never expired")
+		t.Fatal("extended hold's timer did not restore")
+	}
+	if p := f.profile(testCard); p != "a2dp-sink" {
+		t.Errorf("profile = %q", p)
 	}
 }
 
 func TestStaleTimerDoesNotRestoreNewerRelease(t *testing.T) {
 	f := standardFake("a2dp-sink")
 	m, _ := newTestManager(t, f, nil)
+	ft := &fakeTimers{}
+	m.afterFunc = ft.afterFunc
 	ctx := context.Background()
-	if err := m.Release(ctx, testAddr, 50*time.Millisecond); err != nil {
+	if err := m.Release(ctx, testAddr, time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := m.Restore(ctx, testAddr); err != nil {
@@ -590,9 +638,12 @@ func TestStaleTimerDoesNotRestoreNewerRelease(t *testing.T) {
 	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(150 * time.Millisecond)
+	ft.get(0).f() // first release's timer fires after the second release
 	if !m.Released(testAddr) {
 		t.Fatal("first release's timer restored the second release")
+	}
+	if p := f.profile(testCard); p != "off" {
+		t.Errorf("profile = %q, want off", p)
 	}
 	if err := m.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -619,8 +670,14 @@ func TestRecoverRestoresFromStateFile(t *testing.T) {
 	f.mu.Lock()
 	f.def = "rbt_hold"
 	f.mu.Unlock()
+	if _, err := f.Run(context.Background(), "pactl", "move-sink-input", "7", "rbt_hold"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := f.Run(context.Background(), "pactl", "set-card-profile", testCard, "off"); err != nil {
 		t.Fatal(err)
+	}
+	if s := f.inputSink(7); s != "rbt_hold" {
+		t.Fatalf("setup: Spotify on %q, want rbt_hold", s)
 	}
 	f.calls = nil
 
@@ -656,6 +713,40 @@ func TestRecoverRestoresFromStateFile(t *testing.T) {
 }
 
 func TestCloseRestoresAll(t *testing.T) {
+	f := standardFake("a2dp-sink")
+	ch := &changeRec{}
+	m, dir := newTestManager(t, f, ch)
+	ctx := context.Background()
+	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if p := f.profile(testCard); p != "a2dp-sink" {
+		t.Errorf("profile = %q", p)
+	}
+	if d := f.defaultSink(); d != testBTSink {
+		t.Errorf("default = %q", d)
+	}
+	if m.Released(testAddr) {
+		t.Error("still released after Close")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("state files left: %v", entries)
+	}
+	if f.moduleCount() != 0 {
+		t.Error("module still loaded")
+	}
+	if got := ch.list(); len(got) != 2 || got[1] != testAddr+"=false" {
+		t.Errorf("onChange = %v", got)
+	}
+	if err := m.Release(ctx, testAddr, time.Minute); !errors.Is(err, ErrClosed) {
+		t.Errorf("Release after Close = %v, want ErrClosed", err)
+	}
+}
+
+func TestReleaseOtherDeviceIsBusy(t *testing.T) {
 	const addr2 = "58:18:62:63:08:B3"
 	const card2 = "bluez_card.58_18_62_63_08_B3"
 	f := standardFake("a2dp-sink")
@@ -668,25 +759,35 @@ func TestCloseRestoresAll(t *testing.T) {
 	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Release(ctx, addr2, time.Minute); err != nil {
+	f.mu.Lock()
+	before := len(f.calls)
+	f.mu.Unlock()
+	if err := m.Release(ctx, addr2, time.Minute); !errors.Is(err, ErrBusy) {
+		t.Fatalf("second device: err = %v, want ErrBusy", err)
+	}
+	f.mu.Lock()
+	after := len(f.calls)
+	f.mu.Unlock()
+	if after != before {
+		t.Errorf("busy Release ran %d commands", after-before)
+	}
+	if m.Released(addr2) {
+		t.Error("second device released")
+	}
+	if p := f.profile(card2); p != "a2dp-sink" {
+		t.Errorf("second card profile = %q", p)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("state files: %v", entries)
+	}
+	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
+		t.Errorf("same device again: %v", err)
+	}
+	if err := m.Restore(ctx, testAddr); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Close(ctx); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-	for _, c := range []string{testCard, card2} {
-		if p := f.profile(c); p != "a2dp-sink" {
-			t.Errorf("%s profile = %q", c, p)
-		}
-	}
-	if m.Released(testAddr) || m.Released(addr2) {
-		t.Error("still released after Close")
-	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Errorf("state files left: %v", entries)
-	}
-	if f.moduleCount() != 0 {
-		t.Error("modules still loaded")
+	if err := m.Release(ctx, addr2, time.Minute); err != nil {
+		t.Errorf("second device after restore: %v", err)
 	}
 }
 
@@ -788,4 +889,152 @@ func TestRestoreKeepsReleaseWhenProfileFails(t *testing.T) {
 	if p := f.profile(testCard); p != "a2dp-sink" {
 		t.Errorf("retry did not restore profile: %q", p)
 	}
+}
+
+// cancelRunner fails every command once its context is done, like
+// exec.CommandContext, and cancels the test's context right after cancelAfter
+// has run.
+type cancelRunner struct {
+	*fakeRunner
+	cancelAfter string
+	cancel      context.CancelFunc
+}
+
+func (c *cancelRunner) Run(ctx context.Context, name string, args ...string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	out, err := c.fakeRunner.Run(ctx, name, args...)
+	if c.cancelAfter != "" && strings.Join(append([]string{name}, args...), " ") == c.cancelAfter {
+		c.cancel()
+	}
+	return out, err
+}
+
+func assertFullyRestored(t *testing.T, f *fakeRunner, m *Manager, dir string) {
+	t.Helper()
+	if m.Released(testAddr) {
+		t.Error("still released")
+	}
+	if p := f.profile(testCard); p != "a2dp-sink" {
+		t.Errorf("profile = %q", p)
+	}
+	if d := f.defaultSink(); d != testBTSink {
+		t.Errorf("default = %q", d)
+	}
+	if s := f.inputSink(7); s != "jamesdsp_sink" {
+		t.Errorf("Spotify on %q", s)
+	}
+	if s := f.inputSink(9); s != testBTSink {
+		t.Errorf("hog on %q", s)
+	}
+	if v, set := f.configured(); !set || v != testConfig {
+		t.Errorf("configured = %q,%v", v, set)
+	}
+	if f.moduleCount() != 0 {
+		t.Error("module still loaded")
+	}
+	if _, err := os.Stat(statePath(dir)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("state file left: %v", err)
+	}
+}
+
+func TestRestoreWithCancelledContextCompletes(t *testing.T) {
+	f := standardFake("a2dp-sink")
+	r := &cancelRunner{fakeRunner: f}
+	dir := t.TempDir()
+	m := New(r, dir, nil)
+	m.sinkPoll = 5 * time.Millisecond
+	m.sinkWait = 100 * time.Millisecond
+	if err := m.Release(context.Background(), testAddr, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := m.Restore(ctx, testAddr); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	assertFullyRestored(t, f, m, dir)
+}
+
+func TestRestoreSurvivesCancelAfterProfileStep(t *testing.T) {
+	f := standardFake("a2dp-sink")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelRunner{fakeRunner: f, cancel: cancel}
+	dir := t.TempDir()
+	m := New(r, dir, nil)
+	m.sinkPoll = 5 * time.Millisecond
+	m.sinkWait = 100 * time.Millisecond
+	if err := m.Release(context.Background(), testAddr, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	r.cancelAfter = "pactl set-card-profile " + testCard + " a2dp-sink"
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("test setup: context was never cancelled")
+	}
+	assertFullyRestored(t, f, m, dir)
+}
+
+func TestRestoreKeepsReleaseWhenDefaultSinkFails(t *testing.T) {
+	f := standardFake("a2dp-sink")
+	m, dir := newTestManager(t, f, nil)
+	ft := &fakeTimers{}
+	m.afterFunc = ft.afterFunc
+	ctx := context.Background()
+	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.failCmd = "pactl set-default-sink " + testBTSink
+	f.mu.Unlock()
+	if err := m.Restore(ctx, testAddr); err == nil {
+		t.Fatal("Restore reported success")
+	}
+	if !m.Released(testAddr) {
+		t.Fatal("dropped a release whose default sink was never restored")
+	}
+	if _, err := os.Stat(statePath(dir)); err != nil {
+		t.Errorf("state file: %v", err)
+	}
+	retry := ft.get(ft.count() - 1)
+	if retry.d != m.retryDelay {
+		t.Errorf("retry armed for %v, want %v", retry.d, m.retryDelay)
+	}
+	f.mu.Lock()
+	f.failCmd = ""
+	f.mu.Unlock()
+	retry.f()
+	assertFullyRestored(t, f, m, dir)
+}
+
+func TestRestoreKeepsReleaseWhenUnloadFails(t *testing.T) {
+	f := standardFake("a2dp-sink")
+	m, dir := newTestManager(t, f, nil)
+	ft := &fakeTimers{}
+	m.afterFunc = ft.afterFunc
+	ctx := context.Background()
+	if err := m.Release(ctx, testAddr, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.failCmd = "pactl unload-module 501"
+	f.mu.Unlock()
+	if err := m.Restore(ctx, testAddr); err == nil {
+		t.Fatal("Restore reported success")
+	}
+	if !m.Released(testAddr) {
+		t.Fatal("dropped a release whose hold sink is still loaded")
+	}
+	if _, err := os.Stat(statePath(dir)); err != nil {
+		t.Errorf("state file: %v", err)
+	}
+	f.mu.Lock()
+	f.failCmd = ""
+	f.mu.Unlock()
+	ft.get(ft.count() - 1).f()
+	assertFullyRestored(t, f, m, dir)
 }
