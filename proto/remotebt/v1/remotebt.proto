@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package remotebt.v1;
+
+option go_package = "github.com/andree-bjorkgard/remote-bluetooth/v2/internal/pb/remotebtv1;remotebtv1";
+
+// BluetoothService exposes the trusted Bluetooth devices of one host.
+service BluetoothService {
+  // ListDevices returns the trusted devices of the host's adapter.
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse);
+
+  // WatchDevices first sends every trusted device as an update, then a
+  // synced event, then one event per change for as long as the stream is open.
+  rpc WatchDevices(WatchDevicesRequest) returns (stream WatchDevicesResponse);
+
+  // Connect connects a trusted device. It returns once BlueZ reports success.
+  rpc Connect(ConnectRequest) returns (ConnectResponse);
+
+  // Disconnect disconnects a trusted device.
+  rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+}
+
+message Device {
+  // Bluetooth address, upper case, colon separated (AA:BB:CC:DD:EE:FF).
+  string address = 1;
+  string name = 2;
+  // Alias is the user-facing name; BlueZ falls back to name when unset.
+  string alias = 3;
+  // Freedesktop icon name, e.g. "audio-headset".
+  string icon = 4;
+  bool paired = 5;
+  bool trusted = 6;
+  bool connected = 7;
+  // Battery level 0-100, unset when the device does not report one.
+  optional uint32 battery_percent = 8;
+}
+
+message ListDevicesRequest {}
+
+message ListDevicesResponse {
+  repeated Device devices = 1;
+}
+
+message WatchDevicesRequest {}
+
+message WatchDevicesResponse {
+  oneof event {
+    // A device appeared or one of its properties changed.
+    Device updated = 1;
+    // The device with this address is gone or no longer trusted.
+    string removed = 2;
+    // The initial snapshot has been sent.
+    Synced synced = 3;
+  }
+}
+
+message Synced {}
+
+message ConnectRequest {
+  string address = 1;
+}
+
+message ConnectResponse {}
+
+message DisconnectRequest {
+  string address = 1;
+}
+
+message DisconnectResponse {}

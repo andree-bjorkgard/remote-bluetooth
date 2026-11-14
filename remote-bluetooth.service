@@ -1,11 +1,14 @@
 [Unit]
-Description=Remote bluetooth service
+Description=Share trusted Bluetooth devices with other machines (remote-bluetooth)
+Documentation=https://github.com/andree-bjorkgard/remote-bluetooth
 
 [Service]
-ExecStart=%h/go/bin/remote-bluetooth
-Restart=always
-RestartSec=300
+ExecStart=%h/go/bin/remote-bluetooth serve
+# Optional overrides such as REMOTE_BLUETOOTH_PORT or REMOTE_BLUETOOTH_ADAPTER.
+# The secret is read from ~/.config/remote-bluetooth/secret.
+EnvironmentFile=-%h/.config/remote-bluetooth/env
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=default.target
-
