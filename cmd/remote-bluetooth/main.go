@@ -42,6 +42,7 @@ Usage:
   remote-bluetooth watch       [flags]              stream device and server changes
   remote-bluetooth connect     [flags] SERVER ADDR  connect a device on a server
   remote-bluetooth disconnect  [flags] SERVER ADDR  disconnect a device on a server
+  remote-bluetooth play-here   [flags] ADDR         move the sound for a device to this machine
   remote-bluetooth gen-secret  [-force]             create the shared secret
 
 Every machine needs the same secret, in $REMOTE_BLUETOOTH_SECRET or
@@ -62,6 +63,7 @@ func main() {
 		"watch":      watch,
 		"connect":    func(ctx context.Context, a []string) error { return control(ctx, "connect", a) },
 		"disconnect": func(ctx context.Context, a []string) error { return control(ctx, "disconnect", a) },
+		"play-here":  playHere,
 		"gen-secret": genSecret,
 	}
 	name := os.Args[1]
@@ -252,11 +254,13 @@ func devices(ctx context.Context, args []string) error {
 			Icon      string `json:"icon"`
 			Paired    bool   `json:"paired"`
 			Connected bool   `json:"connected"`
+			Audio     string `json:"audio"`
+			Released  bool   `json:"released"`
 			Battery   *uint8 `json:"battery,omitempty"`
 		}
 		out := make([]jsonDevice, 0, len(devs))
 		for _, d := range devs {
-			jd := jsonDevice{Server: d.Server, Address: d.Address, Name: d.Name, Alias: d.Alias, Icon: d.Icon, Paired: d.Paired, Connected: d.Connected}
+			jd := jsonDevice{Server: d.Server, Address: d.Address, Name: d.Name, Alias: d.Alias, Icon: d.Icon, Paired: d.Paired, Connected: d.Connected, Audio: d.Audio.String(), Released: d.Released}
 			if d.HasBattery {
 				b := d.BatteryPercent
 				jd.Battery = &b
@@ -273,13 +277,20 @@ func devices(ctx context.Context, args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "SERVER\tADDRESS\tNAME\tCONNECTED\tBATTERY")
+	fmt.Fprintln(tw, "SERVER\tADDRESS\tNAME\tCONNECTED\tAUDIO\tBATTERY")
 	for _, d := range devs {
 		battery := "-"
 		if d.HasBattery {
 			battery = fmt.Sprintf("%d%%", d.BatteryPercent)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%s\n", d.Server, d.Address, d.Alias, d.Connected, battery)
+		audioCol := "-"
+		if d.Audio != bluez.AudioNone {
+			audioCol = d.Audio.String()
+		}
+		if d.Released {
+			audioCol += ", released"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%v\t%s\t%s\n", d.Server, d.Address, d.Alias, d.Connected, audioCol, battery)
 	}
 	return tw.Flush()
 }
@@ -359,6 +370,81 @@ func control(ctx context.Context, op string, args []string) error {
 			return fmt.Errorf("server %q not found within %s (known: %s)", server, *wait, strings.Join(c.Servers(), ", "))
 		}
 	}
+}
+
+// playHere moves the sound for a device to this machine: servers sending to
+// it let go, this machine's own audio takes over, and they are restored.
+func playHere(ctx context.Context, args []string) error {
+	fs := flag.NewFlagSet("play-here", flag.ExitOnError)
+	cf := addClientFlags(fs)
+	adapterID := fs.String("adapter", os.Getenv("REMOTE_BLUETOOTH_ADAPTER"), "Bluetooth adapter, e.g. hci0; default is the first one [$REMOTE_BLUETOOTH_ADAPTER]")
+	wait := fs.Duration("wait", 5*time.Second, "how long to wait for servers to show up")
+	_ = fs.Parse(args)
+	if fs.NArg() != 1 {
+		return errors.New("usage: remote-bluetooth play-here ADDRESS")
+	}
+	addr, err := bluez.NormalizeAddress(fs.Arg(0))
+	if err != nil {
+		return err
+	}
+
+	adapter, err := bluez.Open(*adapterID)
+	if err != nil {
+		return err
+	}
+	defer adapter.Close()
+
+	c, err := cf.newClient()
+	if err != nil {
+		return err
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go func() { _ = c.Run(runCtx) }()
+
+	// Wait for the first server, then give the others a moment so every
+	// holder is known before PlayHere reads the device snapshot.
+	const quiet = 500 * time.Millisecond
+	deadline := time.NewTimer(*wait)
+	defer deadline.Stop()
+	var idle <-chan time.Time
+	waiting := true
+	for waiting {
+		select {
+		case ev, ok := <-c.Events():
+			if !ok {
+				return ctx.Err()
+			}
+			if ev.Type == client.ServerUp {
+				idle = time.After(quiet)
+			}
+		case <-idle:
+			waiting = false
+		case <-deadline.C:
+			waiting = false
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	// Keep draining events so the client's device snapshot stays live.
+	go func() {
+		for range c.Events() {
+		}
+	}()
+
+	sendingHere := func(ctx context.Context) bool {
+		d, err := adapter.Device(ctx, addr)
+		return err == nil && d.Audio == bluez.AudioSending
+	}
+	res, err := c.PlayHere(ctx, addr, sendingHere)
+	for name, ferr := range res.Failed {
+		fmt.Fprintf(os.Stderr, "%s: %v\n", name, ferr)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("sound moved here; %s let go and are back to normal\n", strings.Join(res.Released, ", "))
+	return nil
 }
 
 func genSecret(_ context.Context, args []string) error {

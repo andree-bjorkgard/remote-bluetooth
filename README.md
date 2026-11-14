@@ -52,6 +52,7 @@ On every other machine, `make install`, put the same secret in
 | `watch` | stream device and server changes |
 | `connect SERVER ADDR` | connect a device on a server |
 | `disconnect SERVER ADDR` | disconnect a device on a server |
+| `play-here ADDR` | move the sound for a device to this machine; servers sending to it let go and are restored |
 | `gen-secret` | create the shared secret |
 
 Client commands skip the server on the local machine unless given `-local`.
