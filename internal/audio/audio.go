@@ -1,14 +1,17 @@
 // Package audio lets go of Bluetooth headphones so another machine can
 // play on them, and puts this machine's audio back afterwards. It turns the
-// headphones' PipeWire card profile off with pactl, parks the streams that
-// were playing on a null sink, and later restores the card profile, default
-// sink, every stream's sink and default.configured.audio.sink exactly.
+// headphones' PipeWire card profile off without saving it (so WirePlumber
+// never stores "off" as the user's choice), parks the streams that were
+// playing on a null sink, and later restores the card profile, default sink,
+// every stream's sink and default.configured.audio.sink exactly.
 package audio
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -46,6 +49,7 @@ type Manager struct {
 	p        pactl
 	dir      string
 	onChange func(address string, released bool)
+	log      *slog.Logger
 
 	sinkPoll   time.Duration // how often Restore polls for the Bluetooth sink
 	sinkWait   time.Duration // how long Restore waits for it
@@ -63,24 +67,43 @@ type Manager struct {
 }
 
 type heldRelease struct {
-	st    *releaseState
-	timer timer
-	gen   uint64
+	st       *releaseState
+	timer    timer
+	gen      uint64
+	retrying bool // the timer retries a failed restore rather than ending a hold
 }
 
 // New returns a Manager that runs commands with r and keeps its state files
 // in stateDir. onChange, if not nil, is called whenever a device becomes
 // released or restored; it is called without the Manager's locks held.
-func New(r Runner, stateDir string, onChange func(address string, released bool)) *Manager {
-	return &Manager{
+func New(r Runner, stateDir string, onChange func(address string, released bool), opts ...Option) *Manager {
+	m := &Manager{
 		p:          pactl{r: r},
 		dir:        stateDir,
 		onChange:   onChange,
+		log:        slog.New(slog.DiscardHandler),
 		sinkPoll:   defaultSinkPoll,
 		sinkWait:   defaultSinkWait,
 		retryDelay: defaultRetryDelay,
 		afterFunc:  func(d time.Duration, f func()) timer { return time.AfterFunc(d, f) },
 		held:       map[string]*heldRelease{},
+	}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
+}
+
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithLogger makes the Manager log failed restores, their retries and the
+// hold sinks it cleans up. By default it logs nothing.
+func WithLogger(l *slog.Logger) Option {
+	return func(m *Manager) {
+		if l != nil {
+			m.log = l
+		}
 	}
 }
 
@@ -103,6 +126,33 @@ func (m *Manager) armLocked(addr string, h *heldRelease, d time.Duration) {
 	h.timer = m.afterFunc(d, func() { m.expire(addr, gen) })
 }
 
+// retryLocked schedules another restore of h after one failed with err, and
+// logs it. After Close the state file is left for the next start. m.mu must
+// be held.
+func (m *Manager) retryLocked(addr string, h *heldRelease, err error) {
+	if m.closed {
+		m.log.Error("audio restore failed; left for the next start", "address", addr, "err", err)
+		return
+	}
+	m.log.Warn("audio restore failed; will retry", "address", addr, "err", err, "retry_in", m.retryDelay)
+	h.retrying = true
+	m.armLocked(addr, h, m.retryDelay)
+}
+
+// holdForRetryLocked keeps a release whose restore failed with err, so the
+// timer retries it. After Close it only logs; the state file stays for the
+// next start. It reports whether the release is now held. m.mu must be held.
+func (m *Manager) holdForRetryLocked(addr string, st *releaseState, err error) bool {
+	if m.closed {
+		m.retryLocked(addr, nil, err)
+		return false
+	}
+	h := &heldRelease{st: st}
+	m.held[addr] = h
+	m.retryLocked(addr, h, err)
+	return true
+}
+
 // Release lets go of the device's audio for hold, after which it is restored
 // automatically. Releasing a device that is already released only restarts
 // its hold; releasing another device meanwhile returns ErrBusy.
@@ -123,6 +173,7 @@ func (m *Manager) Release(ctx context.Context, address string, hold time.Duratio
 		return ErrClosed
 	}
 	if h, ok := m.held[addr]; ok {
+		h.retrying = false
 		m.armLocked(addr, h, hold)
 		m.mu.Unlock()
 		m.ops.Unlock()
@@ -136,6 +187,15 @@ func (m *Manager) Release(ctx context.Context, address string, hold time.Duratio
 	m.mu.Unlock()
 
 	st, err := m.release(ctx, addr)
+	if err != nil && st != nil {
+		// The release failed and could not be undone: keep retrying.
+		m.mu.Lock()
+		m.holdForRetryLocked(addr, st, err)
+		m.mu.Unlock()
+		m.ops.Unlock()
+		m.notify(addr, true)
+		return err
+	}
 	if err != nil {
 		m.ops.Unlock()
 		return err
@@ -152,7 +212,9 @@ func (m *Manager) Release(ctx context.Context, address string, hold time.Duratio
 }
 
 // release does the work of Release. On failure after the first change it
-// puts everything back before returning. m.ops must be held.
+// puts everything back before returning; if that cannot finish either, it
+// returns the state still to restore along with the error. m.ops must be
+// held.
 func (m *Manager) release(ctx context.Context, addr string) (*releaseState, error) {
 	under := underscored(addr)
 	cardName := "bluez_card." + under
@@ -166,6 +228,15 @@ func (m *Manager) release(ctx context.Context, addr string) (*releaseState, erro
 		return nil, fmt.Errorf("%w: %s", ErrNoCard, addr)
 	}
 	profile := cards[i].ActiveProfile
+	if profile == "" {
+		return nil, fmt.Errorf("audio: %s: active profile unknown", cardName)
+	}
+
+	// No release is held, so any hold sink is a leftover. Unload it before
+	// reading the default sink, which may be that hold sink.
+	if err := m.unloadStrayHoldSinks(ctx, nil); err != nil {
+		return nil, err
+	}
 
 	defSink, err := m.p.defaultSink(ctx)
 	if err != nil {
@@ -208,14 +279,15 @@ func (m *Manager) release(ctx context.Context, addr string) (*releaseState, erro
 		return nil, err
 	}
 
-	id, err := m.p.loadHoldSink(ctx)
+	// A cancelled load could leave a module behind that nothing knows about.
+	bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+	defer cancel()
+	id, err := m.p.loadHoldSink(bg)
 	if err != nil {
 		return nil, errors.Join(err, removeState(path))
 	}
 	st.Module = id
 	if err := writeState(path, st); err != nil {
-		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
-		defer cancel()
 		return nil, errors.Join(err, m.p.unloadModule(bg, id), removeState(path))
 	}
 
@@ -233,10 +305,43 @@ func (m *Manager) release(ctx context.Context, addr string) (*releaseState, erro
 		err = m.p.setCardProfile(ctx, cardName, "off")
 	}
 	if err != nil {
-		_, rerr := m.restore(ctx, st)
-		return nil, errors.Join(err, rerr)
+		done, rerr := m.restore(ctx, st)
+		err = errors.Join(err, rerr)
+		if !done {
+			return st, err
+		}
+		return nil, err
 	}
 	return st, nil
+}
+
+// unloadStrayHoldSinks unloads every hold sink whose module is not in keep,
+// such as one left by a crash between load-module and the state write. Apps
+// WirePlumber remembers on the hold sink then fall back to the default
+// again. m.ops must be held.
+func (m *Manager) unloadStrayHoldSinks(ctx context.Context, keep map[string]bool) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreTimeout)
+	defer cancel()
+	sinks, err := m.p.sinks(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, s := range sinks {
+		mod := s.owner()
+		if s.Name != holdSinkName || keep[mod] {
+			continue
+		}
+		if n, err := strconv.ParseUint(mod, 10, 32); err != nil || n == math.MaxUint32 {
+			// No module id (pactl reports none as PA_INVALID_INDEX):
+			// nothing to unload it by.
+			m.log.Warn("stray hold sink has no module to unload", "sink", s.Index)
+			continue
+		}
+		m.log.Info("unloading stray hold sink", "module", mod)
+		errs = append(errs, m.p.unloadModule(ctx, mod))
+	}
+	return errors.Join(errs...)
 }
 
 // moveStreams moves each sink-input to its sink. A stream that ended in the
@@ -302,6 +407,9 @@ func (m *Manager) expire(addr string, gen uint64) {
 		m.ops.Unlock()
 		return
 	}
+	if h.retrying {
+		m.log.Info("retrying audio restore", "address", addr)
+	}
 	restored, _ := m.finishRestore(context.Background(), addr, h)
 	m.ops.Unlock()
 	if restored {
@@ -317,9 +425,7 @@ func (m *Manager) finishRestore(ctx context.Context, addr string, h *heldRelease
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if !ok {
-		if !m.closed {
-			m.armLocked(addr, h, m.retryDelay)
-		}
+		m.retryLocked(addr, h, err)
 		return false, err
 	}
 	delete(m.held, addr)
@@ -341,7 +447,9 @@ func (m *Manager) restore(ctx context.Context, st *releaseState) (done bool, err
 	cardGone := false
 	if profileErr != nil && m.cardGone(ctx, st.Card) {
 		// The headphones went away; there is no profile left to put back.
+		// "off" was never saved, so they come back with their own.
 		profileErr, cardGone = nil, true
+		m.log.Info("audio card gone; it will come back with its saved profile", "address", st.Address, "card", st.Card)
 	}
 	errs = append(errs, profileErr)
 
@@ -472,15 +580,16 @@ func (m *Manager) Released(address string) bool {
 }
 
 // Recover restores every release recorded in the state directory, such as
-// those left behind by a crash.
+// those left behind by a crash, and unloads any hold sink no release owns.
+// A restore that cannot finish is kept and retried.
 func (m *Manager) Recover(ctx context.Context) error {
 	paths, err := filepath.Glob(filepath.Join(m.dir, statePattern))
 	if err != nil {
 		return err
 	}
 	m.ops.Lock()
-	defer m.ops.Unlock()
 	var errs []error
+	var retrying []string
 	for _, path := range paths {
 		st, err := readState(path)
 		if err != nil {
@@ -498,8 +607,31 @@ func (m *Manager) Recover(ctx context.Context) error {
 		if held {
 			continue
 		}
-		_, err = m.restore(ctx, st)
+		done, err := m.restore(ctx, st)
 		errs = append(errs, err)
+		if !done {
+			m.mu.Lock()
+			held := m.holdForRetryLocked(addr, st, err)
+			m.mu.Unlock()
+			if held {
+				retrying = append(retrying, addr)
+			}
+		}
+	}
+
+	keep := map[string]bool{}
+	m.mu.Lock()
+	for _, h := range m.held {
+		if h.st.Module != "" {
+			keep[h.st.Module] = true
+		}
+	}
+	m.mu.Unlock()
+	errs = append(errs, m.unloadStrayHoldSinks(ctx, keep))
+	m.ops.Unlock()
+
+	for _, addr := range retrying {
+		m.notify(addr, true)
 	}
 	return errors.Join(errs...)
 }

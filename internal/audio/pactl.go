@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -38,9 +39,12 @@ const (
 	metadataType  = "Spa:String:JSON"
 )
 
+// card is a PipeWire device as pw-dump shows it.
 type card struct {
-	Name          string `json:"name"`
-	ActiveProfile string `json:"active_profile"`
+	ID            int
+	Name          string         // device.name, such as bluez_card.00_0A_45_19_F3_A6
+	ActiveProfile string         // "" if PipeWire reports none
+	Profiles      map[string]int // profile name -> EnumProfile index
 }
 
 type sink struct {
@@ -59,7 +63,8 @@ type sinkInput struct {
 	Sink  int `json:"sink"`
 }
 
-// pactl wraps the pactl and pw-metadata commands the Manager needs.
+// pactl wraps the pactl, pw-metadata, pw-dump and pw-cli commands the
+// Manager needs.
 type pactl struct{ r Runner }
 
 func (p pactl) listJSON(ctx context.Context, what string, v any) error {
@@ -73,9 +78,57 @@ func (p pactl) listJSON(ctx context.Context, what string, v any) error {
 	return nil
 }
 
+// cards lists PipeWire's devices from pw-dump.
 func (p pactl) cards(ctx context.Context) ([]card, error) {
-	var c []card
-	return c, p.listJSON(ctx, "cards", &c)
+	out, err := p.r.Run(ctx, "pw-dump")
+	if err != nil {
+		return nil, err
+	}
+	return parseDevices(out)
+}
+
+type profileParam struct {
+	Index int    `json:"index"`
+	Name  string `json:"name"`
+}
+
+// parseDevices picks the devices out of pw-dump's JSON array of objects.
+func parseDevices(out []byte) ([]card, error) {
+	var objs []struct {
+		ID   int             `json:"id"`
+		Type string          `json:"type"`
+		Info json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(out, &objs); err != nil {
+		return nil, fmt.Errorf("audio: parse pw-dump: %w", err)
+	}
+	var cards []card
+	for _, o := range objs {
+		if !strings.HasSuffix(o.Type, "Device") || len(o.Info) == 0 || string(o.Info) == "null" {
+			continue
+		}
+		var info struct {
+			Props struct {
+				Name string `json:"device.name"`
+			} `json:"props"`
+			Params struct {
+				EnumProfile []profileParam `json:"EnumProfile"`
+				Profile     []profileParam `json:"Profile"`
+			} `json:"params"`
+		}
+		if err := json.Unmarshal(o.Info, &info); err != nil {
+			return nil, fmt.Errorf("audio: parse pw-dump device %d: %w", o.ID, err)
+		}
+		c := card{ID: o.ID, Name: info.Props.Name, Profiles: map[string]int{}}
+		for _, e := range info.Params.EnumProfile {
+			c.Profiles[e.Name] = e.Index
+		}
+		if len(info.Params.Profile) > 0 {
+			c.ActiveProfile = info.Params.Profile[0].Name
+		}
+		cards = append(cards, c)
+	}
+	return cards, nil
 }
 
 func (p pactl) sinks(ctx context.Context) ([]sink, error) {
@@ -164,7 +217,23 @@ func (p pactl) moveSinkInput(ctx context.Context, index int, sinkName string) er
 	return err
 }
 
-func (p pactl) setCardProfile(ctx context.Context, card, profile string) error {
-	_, err := p.r.Run(ctx, "pactl", "set-card-profile", card, profile)
+// setCardProfile switches the card to profile through PipeWire with
+// save: false. pactl set-card-profile would save it, and WirePlumber would
+// then bring that profile (even "off") back on every later connection.
+func (p pactl) setCardProfile(ctx context.Context, name, profile string) error {
+	cards, err := p.cards(ctx)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(cards, func(c card) bool { return c.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%w: %s", ErrNoCard, name)
+	}
+	idx, ok := cards[i].Profiles[profile]
+	if !ok {
+		return fmt.Errorf("audio: card %s has no profile %q", name, profile)
+	}
+	_, err = p.r.Run(ctx, "pw-cli", "set-param", strconv.Itoa(cards[i].ID), "Profile",
+		fmt.Sprintf("{ index: %d, save: false }", idx))
 	return err
 }

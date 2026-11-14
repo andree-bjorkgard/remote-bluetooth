@@ -140,7 +140,7 @@ func serve(ctx context.Context, args []string) error {
 	var srv *server.Server
 	mgr := audio.New(audio.ExecRunner{}, stateDir(), func(address string, released bool) {
 		srv.SetReleased(address, released)
-	})
+	}, audio.WithLogger(log))
 	srv = server.New(adapter, mgr, log)
 	g := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(id.ServerConfig())),
