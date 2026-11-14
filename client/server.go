@@ -36,7 +36,7 @@ type serverConn struct {
 
 	mu      sync.Mutex
 	up      bool
-	devices map[string]bluez.Device
+	devices map[string]Device
 }
 
 func newServerConn(c *Client, name string, addrs []string) (*serverConn, error) {
@@ -63,7 +63,7 @@ func newServerConn(c *Client, name string, addrs []string) (*serverConn, error) 
 		resolver: r,
 		conn:     conn,
 		rpc:      pb.NewBluetoothServiceClient(conn),
-		devices:  map[string]bluez.Device{},
+		devices:  map[string]Device{},
 	}, nil
 }
 
@@ -91,7 +91,7 @@ func (s *serverConn) snapshot() []Device {
 	}
 	devs := make([]Device, 0, len(s.devices))
 	for _, d := range s.devices {
-		devs = append(devs, Device{Server: s.name, Device: d})
+		devs = append(devs, d)
 	}
 	return devs
 }
@@ -144,7 +144,7 @@ func (s *serverConn) watch(ctx context.Context) (synced bool, err error) {
 		}
 		switch ev := msg.Event.(type) {
 		case *pb.WatchDevicesResponse_Updated:
-			d := fromProto(ev.Updated)
+			d := fromProto(s.name, ev.Updated)
 			if !synced {
 				seen[d.Address] = true
 			}
@@ -163,13 +163,13 @@ func (s *serverConn) watch(ctx context.Context) (synced bool, err error) {
 
 // update stores a device. Before sync the events are held back; sync
 // reports the whole initial state at once.
-func (s *serverConn) update(ctx context.Context, d bluez.Device, live bool) {
+func (s *serverConn) update(ctx context.Context, d Device, live bool) {
 	s.mu.Lock()
 	old, known := s.devices[d.Address]
 	s.devices[d.Address] = d
 	s.mu.Unlock()
 	if live && (!known || old != d) {
-		s.c.emit(ctx, Event{Type: DeviceUpdated, Server: s.name, Device: Device{Server: s.name, Device: d}})
+		s.c.emit(ctx, Event{Type: DeviceUpdated, Server: s.name, Device: d})
 	}
 }
 
@@ -194,7 +194,7 @@ func (s *serverConn) sync(ctx context.Context, seen map[string]bool) {
 		}
 	}
 	s.up = true
-	devs := make([]bluez.Device, 0, len(s.devices))
+	devs := make([]Device, 0, len(s.devices))
 	for _, d := range s.devices {
 		devs = append(devs, d)
 	}
@@ -203,7 +203,7 @@ func (s *serverConn) sync(ctx context.Context, seen map[string]bool) {
 	s.c.log.Info("server up", "server", s.name, "devices", len(devs))
 	s.c.emit(ctx, Event{Type: ServerUp, Server: s.name})
 	for _, d := range devs {
-		s.c.emit(ctx, Event{Type: DeviceUpdated, Server: s.name, Device: Device{Server: s.name, Device: d}})
+		s.c.emit(ctx, Event{Type: DeviceUpdated, Server: s.name, Device: d})
 	}
 }
 
@@ -254,19 +254,35 @@ func withDefaultTimeout(ctx context.Context) (context.Context, context.CancelFun
 	return context.WithTimeout(ctx, callTimeout)
 }
 
-func fromProto(p *pb.Device) bluez.Device {
-	d := bluez.Device{
-		Address:   p.GetAddress(),
-		Name:      p.GetName(),
-		Alias:     p.GetAlias(),
-		Icon:      p.GetIcon(),
-		Paired:    p.GetPaired(),
-		Trusted:   p.GetTrusted(),
-		Connected: p.GetConnected(),
+func fromProto(server string, p *pb.Device) Device {
+	d := Device{
+		Server:   server,
+		Released: p.GetReleased(),
+		Device: bluez.Device{
+			Address:   p.GetAddress(),
+			Name:      p.GetName(),
+			Alias:     p.GetAlias(),
+			Icon:      p.GetIcon(),
+			Paired:    p.GetPaired(),
+			Trusted:   p.GetTrusted(),
+			Connected: p.GetConnected(),
+			Audio:     audioFromProto(p.GetAudioState()),
+		},
 	}
 	if p.BatteryPercent != nil {
 		d.HasBattery = true
 		d.BatteryPercent = uint8(min(p.GetBatteryPercent(), 100))
 	}
 	return d
+}
+
+// audioFromProto maps unknown values (a newer server) to AudioNone.
+func audioFromProto(a pb.AudioState) bluez.AudioState {
+	switch a {
+	case pb.AudioState_AUDIO_STATE_IDLE:
+		return bluez.AudioIdle
+	case pb.AudioState_AUDIO_STATE_SENDING:
+		return bluez.AudioSending
+	}
+	return bluez.AudioNone
 }

@@ -18,6 +18,19 @@ service BluetoothService {
 
   // Disconnect disconnects a trusted device.
   rpc Disconnect(DisconnectRequest) returns (DisconnectResponse);
+
+  // Release makes this server drop a device and keep its hands off it for
+  // hold_seconds, so another host can take it.
+  rpc Release(ReleaseRequest) returns (ReleaseResponse);
+
+  // Restore ends a release early and reconnects the device.
+  rpc Restore(RestoreRequest) returns (RestoreResponse);
+}
+
+enum AudioState {
+  AUDIO_STATE_NONE = 0;
+  AUDIO_STATE_IDLE = 1;
+  AUDIO_STATE_SENDING = 2;
 }
 
 message Device {
@@ -33,6 +46,9 @@ message Device {
   bool connected = 7;
   // Battery level 0-100, unset when the device does not report one.
   optional uint32 battery_percent = 8;
+  AudioState audio_state = 9;
+  // This server is holding a release for the device.
+  bool released = 10;
 }
 
 message ListDevicesRequest {}
@@ -67,3 +83,17 @@ message DisconnectRequest {
 }
 
 message DisconnectResponse {}
+
+message ReleaseRequest {
+  string address = 1;
+  // 0 means the default of 15 seconds; capped at 30.
+  uint32 hold_seconds = 2;
+}
+
+message ReleaseResponse {}
+
+message RestoreRequest {
+  string address = 1;
+}
+
+message RestoreResponse {}

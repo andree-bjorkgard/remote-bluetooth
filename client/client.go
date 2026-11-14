@@ -62,6 +62,8 @@ type Config struct {
 type Device struct {
 	// Server is the name of the server the device belongs to.
 	Server string
+	// Released is set while the server is holding a release for the device.
+	Released bool
 	bluez.Device
 }
 

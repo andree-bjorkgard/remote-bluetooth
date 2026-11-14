@@ -265,19 +265,31 @@ func toStatus(err error) error {
 
 func toProto(d bluez.Device) *pb.Device {
 	p := &pb.Device{
-		Address:   d.Address,
-		Name:      d.Name,
-		Alias:     d.Alias,
-		Icon:      d.Icon,
-		Paired:    d.Paired,
-		Trusted:   d.Trusted,
-		Connected: d.Connected,
+		Address:    d.Address,
+		Name:       d.Name,
+		Alias:      d.Alias,
+		Icon:       d.Icon,
+		Paired:     d.Paired,
+		Trusted:    d.Trusted,
+		Connected:  d.Connected,
+		AudioState: audioToProto(d.Audio),
+		Released:   false, // wired to the release hold in a later task
 	}
 	if d.HasBattery {
 		b := uint32(d.BatteryPercent)
 		p.BatteryPercent = &b
 	}
 	return p
+}
+
+func audioToProto(a bluez.AudioState) pb.AudioState {
+	switch a {
+	case bluez.AudioIdle:
+		return pb.AudioState_AUDIO_STATE_IDLE
+	case bluez.AudioSending:
+		return pb.AudioState_AUDIO_STATE_SENDING
+	}
+	return pb.AudioState_AUDIO_STATE_NONE
 }
 
 func peerAddr(ctx context.Context) string {

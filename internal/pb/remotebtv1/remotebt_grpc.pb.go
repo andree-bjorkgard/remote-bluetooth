@@ -23,6 +23,8 @@ const (
 	BluetoothService_WatchDevices_FullMethodName = "/remotebt.v1.BluetoothService/WatchDevices"
 	BluetoothService_Connect_FullMethodName      = "/remotebt.v1.BluetoothService/Connect"
 	BluetoothService_Disconnect_FullMethodName   = "/remotebt.v1.BluetoothService/Disconnect"
+	BluetoothService_Release_FullMethodName      = "/remotebt.v1.BluetoothService/Release"
+	BluetoothService_Restore_FullMethodName      = "/remotebt.v1.BluetoothService/Restore"
 )
 
 // BluetoothServiceClient is the client API for BluetoothService service.
@@ -40,6 +42,11 @@ type BluetoothServiceClient interface {
 	Connect(ctx context.Context, in *ConnectRequest, opts ...grpc.CallOption) (*ConnectResponse, error)
 	// Disconnect disconnects a trusted device.
 	Disconnect(ctx context.Context, in *DisconnectRequest, opts ...grpc.CallOption) (*DisconnectResponse, error)
+	// Release makes this server drop a device and keep its hands off it for
+	// hold_seconds, so another host can take it.
+	Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error)
+	// Restore ends a release early and reconnects the device.
+	Restore(ctx context.Context, in *RestoreRequest, opts ...grpc.CallOption) (*RestoreResponse, error)
 }
 
 type bluetoothServiceClient struct {
@@ -99,6 +106,26 @@ func (c *bluetoothServiceClient) Disconnect(ctx context.Context, in *DisconnectR
 	return out, nil
 }
 
+func (c *bluetoothServiceClient) Release(ctx context.Context, in *ReleaseRequest, opts ...grpc.CallOption) (*ReleaseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReleaseResponse)
+	err := c.cc.Invoke(ctx, BluetoothService_Release_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *bluetoothServiceClient) Restore(ctx context.Context, in *RestoreRequest, opts ...grpc.CallOption) (*RestoreResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestoreResponse)
+	err := c.cc.Invoke(ctx, BluetoothService_Restore_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BluetoothServiceServer is the server API for BluetoothService service.
 // All implementations must embed UnimplementedBluetoothServiceServer
 // for forward compatibility.
@@ -114,6 +141,11 @@ type BluetoothServiceServer interface {
 	Connect(context.Context, *ConnectRequest) (*ConnectResponse, error)
 	// Disconnect disconnects a trusted device.
 	Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error)
+	// Release makes this server drop a device and keep its hands off it for
+	// hold_seconds, so another host can take it.
+	Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error)
+	// Restore ends a release early and reconnects the device.
+	Restore(context.Context, *RestoreRequest) (*RestoreResponse, error)
 	mustEmbedUnimplementedBluetoothServiceServer()
 }
 
@@ -135,6 +167,12 @@ func (UnimplementedBluetoothServiceServer) Connect(context.Context, *ConnectRequ
 }
 func (UnimplementedBluetoothServiceServer) Disconnect(context.Context, *DisconnectRequest) (*DisconnectResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Disconnect not implemented")
+}
+func (UnimplementedBluetoothServiceServer) Release(context.Context, *ReleaseRequest) (*ReleaseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Release not implemented")
+}
+func (UnimplementedBluetoothServiceServer) Restore(context.Context, *RestoreRequest) (*RestoreResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Restore not implemented")
 }
 func (UnimplementedBluetoothServiceServer) mustEmbedUnimplementedBluetoothServiceServer() {}
 func (UnimplementedBluetoothServiceServer) testEmbeddedByValue()                          {}
@@ -222,6 +260,42 @@ func _BluetoothService_Disconnect_Handler(srv interface{}, ctx context.Context, 
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BluetoothService_Release_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReleaseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BluetoothServiceServer).Release(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BluetoothService_Release_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BluetoothServiceServer).Release(ctx, req.(*ReleaseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BluetoothService_Restore_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BluetoothServiceServer).Restore(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BluetoothService_Restore_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BluetoothServiceServer).Restore(ctx, req.(*RestoreRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BluetoothService_ServiceDesc is the grpc.ServiceDesc for BluetoothService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -240,6 +314,14 @@ var BluetoothService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Disconnect",
 			Handler:    _BluetoothService_Disconnect_Handler,
+		},
+		{
+			MethodName: "Release",
+			Handler:    _BluetoothService_Release_Handler,
+		},
+		{
+			MethodName: "Restore",
+			Handler:    _BluetoothService_Restore_Handler,
 		},
 	},
 	Streams: []grpc.StreamDesc{

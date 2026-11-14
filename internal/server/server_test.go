@@ -19,7 +19,7 @@ import (
 )
 
 var (
-	headset  = bluez.Device{Address: "00:0A:45:19:F3:A6", Alias: "Headset", Trusted: true, Paired: true, HasBattery: true, BatteryPercent: 70}
+	headset  = bluez.Device{Address: "00:0A:45:19:F3:A6", Alias: "Headset", Trusted: true, Paired: true, HasBattery: true, BatteryPercent: 70, Audio: bluez.AudioSending}
 	keyboard = bluez.Device{Address: "DD:57:25:0A:B2:F7", Alias: "Keyboard", Trusted: true, Paired: true}
 	stranger = bluez.Device{Address: "58:18:62:63:08:B3", Alias: "Phone"}
 )
@@ -70,6 +70,9 @@ func TestListDevicesOnlyTrusted(t *testing.T) {
 	}
 	if resp.Devices[0].Address != headset.Address || resp.Devices[0].GetBatteryPercent() != 70 {
 		t.Errorf("first device: %v", resp.Devices[0])
+	}
+	if resp.Devices[0].AudioState != pb.AudioState_AUDIO_STATE_SENDING {
+		t.Errorf("headset audio state: %v", resp.Devices[0].AudioState)
 	}
 	if resp.Devices[1].BatteryPercent != nil {
 		t.Errorf("keyboard should have no battery: %v", resp.Devices[1])

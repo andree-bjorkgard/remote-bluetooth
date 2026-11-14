@@ -18,7 +18,7 @@ import (
 )
 
 var (
-	headset  = bluez.Device{Address: "00:0A:45:19:F3:A6", Alias: "Headset", Trusted: true, HasBattery: true, BatteryPercent: 55}
+	headset  = bluez.Device{Address: "00:0A:45:19:F3:A6", Alias: "Headset", Trusted: true, HasBattery: true, BatteryPercent: 55, Audio: bluez.AudioSending}
 	keyboard = bluez.Device{Address: "DD:57:25:0A:B2:F7", Alias: "Keyboard", Trusted: true}
 )
 
@@ -105,6 +105,9 @@ func TestEndToEnd(t *testing.T) {
 	devs := c.Devices()
 	if len(devs) != 2 || devs[0].Alias != "Headset" || devs[0].BatteryPercent != 55 || devs[0].Server != srv.addr {
 		t.Fatalf("Devices: %+v", devs)
+	}
+	if devs[0].Audio != bluez.AudioSending {
+		t.Errorf("headset audio: %v", devs[0].Audio)
 	}
 
 	if err := c.Connect(ctx, srv.addr, headset.Address); err != nil {
