@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -25,6 +26,7 @@ import (
 
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/bluez"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/client"
+	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/audio"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/auth"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/discovery"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/server"
@@ -131,7 +133,13 @@ func serve(ctx context.Context, args []string) error {
 		return err
 	}
 
-	srv := server.New(adapter, log)
+	// The manager reports released changes to the server, which needs the
+	// manager: close the loop with a forwarding closure.
+	var srv *server.Server
+	mgr := audio.New(audio.ExecRunner{}, stateDir(), func(address string, released bool) {
+		srv.SetReleased(address, released)
+	})
+	srv = server.New(adapter, mgr, log)
 	g := grpc.NewServer(
 		grpc.Creds(credentials.NewTLS(id.ServerConfig())),
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{MinTime: 20 * time.Second, PermitWithoutStream: true}),
@@ -141,6 +149,10 @@ func serve(ctx context.Context, args []string) error {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	// Put back any device a previous run left released.
+	if err := mgr.Recover(ctx); err != nil {
+		log.Warn("restoring released audio failed", "err", err)
+	}
 	errc := make(chan error, 3)
 	go func() { errc <- srv.Run(ctx) }()
 	go func() { errc <- g.Serve(lis) }()
@@ -161,7 +173,20 @@ func serve(ctx context.Context, args []string) error {
 	}
 	cancel()
 	g.Stop()
+	// Never leave a device released when the server goes away.
+	if cerr := mgr.Close(context.Background()); cerr != nil {
+		log.Warn("restoring released audio failed", "err", cerr)
+	}
 	return err
+}
+
+// stateDir is where the audio manager keeps its release records.
+func stateDir() string {
+	base := os.Getenv("XDG_RUNTIME_DIR")
+	if base == "" {
+		base = os.TempDir()
+	}
+	return filepath.Join(base, "remote-bluetooth")
 }
 
 // clientFlags are shared by the commands that talk to servers.

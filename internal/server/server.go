@@ -15,6 +15,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/bluez"
+	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/audio"
 	pb "github.com/andree-bjorkgard/remote-bluetooth/v2/internal/pb/remotebtv1"
 )
 
@@ -28,12 +29,26 @@ type Backend interface {
 
 var _ Backend = (*bluez.Adapter)(nil)
 
+// Audio releases and restores a device's audio on this host. *audio.Manager
+// implements it.
+type Audio interface {
+	Release(ctx context.Context, address string, hold time.Duration) error
+	Restore(ctx context.Context, address string) error
+	Released(address string) bool
+}
+
+var _ Audio = (*audio.Manager)(nil)
+
 const (
 	// subscriberBuffer is how many events a slow watcher may lag behind
 	// before it is dropped and has to resync.
 	subscriberBuffer = 128
 	// maxCallTime caps how long a connect or disconnect may take.
 	maxCallTime = 30 * time.Second
+	// defaultHold and maxHold bound how long a release lasts before the
+	// audio manager restores the device by itself.
+	defaultHold = 15 * time.Second
+	maxHold     = 30 * time.Second
 )
 
 // Server keeps the current set of trusted devices and fans changes out to
@@ -42,12 +57,14 @@ type Server struct {
 	pb.UnimplementedBluetoothServiceServer
 
 	backend Backend
+	audio   Audio // may be nil
 	log     *slog.Logger
 
-	mu      sync.Mutex
-	synced  chan struct{} // closed once the initial device list is loaded
-	devices map[string]bluez.Device
-	subs    map[*subscriber]struct{}
+	mu       sync.Mutex
+	synced   chan struct{} // closed once the initial device list is loaded
+	devices  map[string]bluez.Device
+	released map[string]bool // addresses whose audio is released here
+	subs     map[*subscriber]struct{}
 }
 
 type subscriber struct {
@@ -55,14 +72,17 @@ type subscriber struct {
 	dropped bool
 }
 
-// New returns a server for backend. Call Run to start tracking devices.
-func New(backend Backend, log *slog.Logger) *Server {
+// New returns a server for backend. audio may be nil, in which case Release
+// and Restore are unimplemented. Call Run to start tracking devices.
+func New(backend Backend, audio Audio, log *slog.Logger) *Server {
 	return &Server{
-		backend: backend,
-		log:     log,
-		synced:  make(chan struct{}),
-		devices: map[string]bluez.Device{},
-		subs:    map[*subscriber]struct{}{},
+		backend:  backend,
+		audio:    audio,
+		released: map[string]bool{},
+		log:      log,
+		synced:   make(chan struct{}),
+		devices:  map[string]bluez.Device{},
+		subs:     map[*subscriber]struct{}{},
 	}
 }
 
@@ -118,7 +138,22 @@ func (s *Server) apply(c bluez.Change) {
 		return
 	}
 	s.devices[addr] = c.Device
-	s.broadcast(&pb.WatchDevicesResponse{Event: &pb.WatchDevicesResponse_Updated{Updated: toProto(c.Device)}})
+	s.broadcast(&pb.WatchDevicesResponse{Event: &pb.WatchDevicesResponse_Updated{Updated: toProto(c.Device, s.released[addr])}})
+}
+
+// SetReleased records whether the device's audio is released on this host and
+// tells watchers. It is the audio manager's change callback.
+func (s *Server) SetReleased(address string, released bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if released {
+		s.released[address] = true
+	} else {
+		delete(s.released, address)
+	}
+	if d, ok := s.devices[address]; ok {
+		s.broadcast(&pb.WatchDevicesResponse{Event: &pb.WatchDevicesResponse_Updated{Updated: toProto(d, released)}})
+	}
 }
 
 // broadcast sends ev to every subscriber; s.mu must be held. A subscriber
@@ -147,7 +182,7 @@ func (s *Server) waitSynced(ctx context.Context) error {
 func (s *Server) snapshot() []*pb.Device {
 	devs := make([]*pb.Device, 0, len(s.devices))
 	for _, d := range s.devices {
-		devs = append(devs, toProto(d))
+		devs = append(devs, toProto(d, s.released[d.Address]))
 	}
 	sort.Slice(devs, func(i, j int) bool { return devs[i].Address < devs[j].Address })
 	return devs
@@ -228,6 +263,11 @@ func (s *Server) Disconnect(ctx context.Context, req *pb.DisconnectRequest) (*pb
 // call runs a connect or disconnect for a trusted device. Untrusted devices
 // are reported as not found: the server only exposes trusted ones.
 func (s *Server) call(ctx context.Context, op, address string, fn func(context.Context, string) error) error {
+	return s.callMapped(ctx, op, address, fn, toStatus)
+}
+
+// callMapped is call with its own mapping of fn's errors to gRPC statuses.
+func (s *Server) callMapped(ctx context.Context, op, address string, fn func(context.Context, string) error, toErr func(error) error) error {
 	addr, err := bluez.NormalizeAddress(address)
 	if err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -247,9 +287,50 @@ func (s *Server) call(ctx context.Context, op, address string, fn func(context.C
 	s.log.Info(op, "device", addr, "peer", peerAddr(ctx))
 	if err := fn(ctx, addr); err != nil {
 		s.log.Warn(op+" failed", "device", addr, "err", err)
-		return toStatus(err)
+		return toErr(err)
 	}
 	return nil
+}
+
+// Release implements the RPC.
+func (s *Server) Release(ctx context.Context, req *pb.ReleaseRequest) (*pb.ReleaseResponse, error) {
+	if s.audio == nil {
+		return nil, status.Error(codes.Unimplemented, "audio handoff is not available on this host")
+	}
+	hold := time.Duration(req.GetHoldSeconds()) * time.Second
+	if hold <= 0 {
+		hold = defaultHold
+	}
+	hold = min(hold, maxHold)
+	err := s.callMapped(ctx, "release", req.GetAddress(), func(ctx context.Context, addr string) error {
+		return s.audio.Release(ctx, addr, hold)
+	}, audioStatus)
+	if err != nil {
+		return nil, err
+	}
+	return &pb.ReleaseResponse{}, nil
+}
+
+// Restore implements the RPC.
+func (s *Server) Restore(ctx context.Context, req *pb.RestoreRequest) (*pb.RestoreResponse, error) {
+	if s.audio == nil {
+		return nil, status.Error(codes.Unimplemented, "audio handoff is not available on this host")
+	}
+	if err := s.callMapped(ctx, "restore", req.GetAddress(), s.audio.Restore, audioStatus); err != nil {
+		return nil, err
+	}
+	return &pb.RestoreResponse{}, nil
+}
+
+// audioStatus maps an audio manager error to a gRPC status.
+func audioStatus(err error) error {
+	switch {
+	case errors.Is(err, audio.ErrNoCard):
+		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, audio.ErrBusy):
+		return status.Errorf(codes.FailedPrecondition, "another device is released: %v", err)
+	}
+	return toStatus(err)
 }
 
 func toStatus(err error) error {
@@ -263,7 +344,7 @@ func toStatus(err error) error {
 	}
 }
 
-func toProto(d bluez.Device) *pb.Device {
+func toProto(d bluez.Device, released bool) *pb.Device {
 	p := &pb.Device{
 		Address:    d.Address,
 		Name:       d.Name,
@@ -273,7 +354,7 @@ func toProto(d bluez.Device) *pb.Device {
 		Trusted:    d.Trusted,
 		Connected:  d.Connected,
 		AudioState: audioToProto(d.Audio),
-		Released:   false, // wired to the release hold in a later task
+		Released:   released,
 	}
 	if d.HasBattery {
 		b := uint32(d.BatteryPercent)

@@ -49,7 +49,7 @@ func startServer(t *testing.T, secret, addr string, backend *fakebt.Backend) *te
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	srv := server.New(backend, slog.New(slog.DiscardHandler))
+	srv := server.New(backend, nil, slog.New(slog.DiscardHandler))
 	go srv.Run(ctx)
 	g := grpc.NewServer(grpc.Creds(credentials.NewTLS(id.ServerConfig())))
 	srv.Register(g)

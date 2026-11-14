@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/bluez"
+	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/audio"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/fakebt"
 	pb "github.com/andree-bjorkgard/remote-bluetooth/v2/internal/pb/remotebtv1"
 )
@@ -28,10 +30,23 @@ var (
 // covered by package auth; here we test the service itself.
 func start(t *testing.T, backend Backend) pb.BluetoothServiceClient {
 	t.Helper()
+	return startAudio(t, backend, nil)
+}
+
+// startAudio is start with fake audio wired like the real manager: its
+// changes feed the server's SetReleased.
+func startAudio(t *testing.T, backend Backend, fa *fakebt.Audio) pb.BluetoothServiceClient {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	srv := New(backend, slog.New(slog.DiscardHandler))
+	var a Audio
+	var srv *Server
+	if fa != nil {
+		fa.OnChange = func(addr string, released bool) { srv.SetReleased(addr, released) }
+		a = fa
+	}
+	srv = New(backend, a, slog.New(slog.DiscardHandler))
 	go func() {
 		if err := srv.Run(ctx); err != nil {
 			t.Errorf("Run: %v", err)
@@ -203,5 +218,95 @@ func TestSlowWatcherIsDropped(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestReleaseRestore(t *testing.T) {
+	fa := fakebt.NewAudio()
+	c := startAudio(t, fakebt.New(headset), fa)
+	ctx := ctxT(t)
+	s, err := c.WatchDevices(ctx, &pb.WatchDevicesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := recv(t, s).GetUpdated(); got.GetReleased() {
+		t.Fatalf("snapshot should not be released: %v", got)
+	}
+	recv(t, s) // synced
+
+	if _, err := c.Release(ctx, &pb.ReleaseRequest{Address: "00:0a:45:19:f3:a6"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := recv(t, s).GetUpdated(); got.GetAddress() != headset.Address || !got.Released {
+		t.Fatalf("after release: %v", got)
+	}
+	if _, err := c.Release(ctx, &pb.ReleaseRequest{Address: headset.Address, HoldSeconds: 99}); err != nil {
+		t.Fatal(err)
+	}
+	recv(t, s)
+
+	// ListDevices agrees with the events.
+	resp, err := c.ListDevices(ctx, &pb.ListDevicesRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Devices[0].Released {
+		t.Errorf("ListDevices: %v", resp.Devices[0])
+	}
+
+	if _, err := c.Restore(ctx, &pb.RestoreRequest{Address: headset.Address}); err != nil {
+		t.Fatal(err)
+	}
+	if got := recv(t, s).GetUpdated(); got.GetAddress() != headset.Address || got.Released {
+		t.Fatalf("after restore: %v", got)
+	}
+
+	want := []string{
+		"release " + headset.Address + " 15s",
+		"release " + headset.Address + " 30s",
+		"restore " + headset.Address,
+	}
+	if got := fa.Calls(); !slices.Equal(got, want) {
+		t.Errorf("calls = %q, want %q", got, want)
+	}
+}
+
+func TestReleaseUnknownDevice(t *testing.T) {
+	fa := fakebt.NewAudio()
+	c := startAudio(t, fakebt.New(headset, stranger), fa)
+	ctx := ctxT(t)
+
+	for _, addr := range []string{stranger.Address, "11:22:33:44:55:66"} {
+		_, err := c.Release(ctx, &pb.ReleaseRequest{Address: addr})
+		if status.Code(err) != codes.NotFound {
+			t.Errorf("Release %s: %v, want NotFound", addr, err)
+		}
+		_, err = c.Restore(ctx, &pb.RestoreRequest{Address: addr})
+		if status.Code(err) != codes.NotFound {
+			t.Errorf("Restore %s: %v, want NotFound", addr, err)
+		}
+	}
+	if _, err := c.Release(ctx, &pb.ReleaseRequest{Address: "nope"}); status.Code(err) != codes.InvalidArgument {
+		t.Errorf("malformed: %v, want InvalidArgument", err)
+	}
+	if got := fa.Calls(); len(got) != 0 {
+		t.Errorf("audio called: %q", got)
+	}
+
+	for _, e := range []error{audio.ErrNoCard, audio.ErrBusy} {
+		fa.FailRelease = e
+		if _, err := c.Release(ctx, &pb.ReleaseRequest{Address: headset.Address}); status.Code(err) != codes.FailedPrecondition {
+			t.Errorf("%v: %v, want FailedPrecondition", e, err)
+		}
+	}
+}
+
+func TestReleaseWithoutAudio(t *testing.T) {
+	c := start(t, fakebt.New(headset))
+	if _, err := c.Release(ctxT(t), &pb.ReleaseRequest{Address: headset.Address}); status.Code(err) != codes.Unimplemented {
+		t.Errorf("Release: %v, want Unimplemented", err)
+	}
+	if _, err := c.Restore(ctxT(t), &pb.RestoreRequest{Address: headset.Address}); status.Code(err) != codes.Unimplemented {
+		t.Errorf("Restore: %v, want Unimplemented", err)
 	}
 }
