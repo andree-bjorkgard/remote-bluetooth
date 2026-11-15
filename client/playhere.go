@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	// ErrNotHeldElsewhere is returned by PlayHere when no server is sending
-	// audio to the device.
-	ErrNotHeldElsewhere = errors.New("client: no other computer is sending to this device")
+	// ErrNotHeldElsewhere is returned by PlayHere when no other server has
+	// the device connected with audio to let go of.
+	ErrNotHeldElsewhere = errors.New("client: no other computer has this device connected")
 	// ErrNothingPlayingHere is returned by PlayHere when this machine did not
 	// start sending in time.
 	ErrNothingPlayingHere = errors.New("client: nothing is playing here")
@@ -55,15 +55,20 @@ func (c *Client) Restore(ctx context.Context, server, address string) error {
 }
 
 // PlayHere moves the sound for the device to this machine. Every server
-// sending to it lets go, sendingHere is polled until this machine sends,
+// with the device connected lets go, sending or not: a headset can stay
+// with an idle source and ignore this machine until that source lets go.
+// A server with no audio card for the device has nothing to hold and is
+// skipped. Then sendingHere is polled until this machine sends,
 // and after a short settle the holders restore their audio. If this machine
 // never sends, the holders are left to restore on their own at hold expiry.
 func (c *Client) PlayHere(ctx context.Context, address string, sendingHere func(context.Context) bool) (PlayHereResult, error) {
 	res := PlayHereResult{Failed: map[string]error{}}
 	var holders []string
+	noTransport := map[string]bool{}
 	for _, d := range c.Devices() {
-		if d.Address == address && d.Audio == bluez.AudioSending {
+		if d.Address == address && d.Connected {
 			holders = append(holders, d.Server)
+			noTransport[d.Server] = d.Audio == bluez.AudioNone
 		}
 	}
 	if len(holders) == 0 {
@@ -79,9 +84,12 @@ func (c *Client) PlayHere(ctx context.Context, address string, sendingHere func(
 			err := c.Release(ctx, name, address, playHereHold)
 			mu.Lock()
 			defer mu.Unlock()
-			if err != nil {
+			switch {
+			case err != nil && noTransport[name] && errors.Is(err, ErrNoAudio):
+				// No audio card there, so nothing to let go of.
+			case err != nil:
 				res.Failed[name] = err
-			} else {
+			default:
 				res.Released = append(res.Released, name)
 			}
 		}()
@@ -89,9 +97,14 @@ func (c *Client) PlayHere(ctx context.Context, address string, sendingHere func(
 	wg.Wait()
 	sort.Strings(res.Released)
 	if len(res.Released) == 0 {
+		if len(res.Failed) == 0 {
+			return res, ErrNotHeldElsewhere
+		}
 		var errs []error
 		for _, name := range holders {
-			errs = append(errs, res.Failed[name])
+			if err := res.Failed[name]; err != nil {
+				errs = append(errs, err)
+			}
 		}
 		return res, errors.Join(errs...)
 	}

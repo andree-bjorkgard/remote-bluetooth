@@ -63,7 +63,7 @@ func TestPlayOnNothingThere(t *testing.T) {
 
 func TestPlayOnNotConnectedThere(t *testing.T) {
 	fastPlayHere(t)
-	c, here, there := hereAndThere(t, idleHeadset())
+	c, here, there := hereAndThere(t, disconnectedHeadset())
 	if err := c.PlayOn(context.Background(), there, headset.Address); !errors.Is(err, ErrNotConnectedThere) {
 		t.Fatalf("err = %v", err)
 	}

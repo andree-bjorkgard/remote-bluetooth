@@ -369,8 +369,8 @@ func control(ctx context.Context, op string, args []string) error {
 	}
 }
 
-// playHere moves the sound for a device to this machine: servers sending to
-// it let go, this machine's own audio takes over, and they are restored.
+// playHere moves the sound for a device to this machine: servers with it
+// connected let go, this machine's own audio takes over, and they are restored.
 func playHere(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("play-here", flag.ExitOnError)
 	cf := addClientFlags(fs)

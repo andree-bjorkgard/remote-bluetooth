@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/bluez"
+	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/audio"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/auth"
 	"github.com/andree-bjorkgard/remote-bluetooth/v2/internal/fakebt"
 )
@@ -19,12 +20,29 @@ func fastPlayHere(t *testing.T) {
 }
 
 func idleHeadset() bluez.Device {
-	d := headset
+	d := sendingHeadset()
 	d.Audio = bluez.AudioIdle
 	return d
 }
 
-func sendingHeadset() bluez.Device { return headset }
+func sendingHeadset() bluez.Device {
+	d := headset
+	d.Connected = true
+	return d
+}
+
+func disconnectedHeadset() bluez.Device {
+	d := headset
+	d.Connected = false
+	d.Audio = bluez.AudioNone
+	return d
+}
+
+func noTransportHeadset() bluez.Device {
+	d := sendingHeadset()
+	d.Audio = bluez.AudioNone
+	return d
+}
 
 // twoServers starts two servers and a client that sees both.
 func twoServers(t *testing.T, d1, d2 bluez.Device, a1, a2 *fakebt.Audio) (*Client, *testServer, *testServer) {
@@ -40,7 +58,7 @@ func twoServers(t *testing.T, d1, d2 bluez.Device, a1, a2 *fakebt.Audio) (*Clien
 func TestPlayHere(t *testing.T) {
 	fastPlayHere(t)
 	a1, a2 := fakebt.NewAudio(), fakebt.NewAudio()
-	c, s1, _ := twoServers(t, sendingHeadset(), idleHeadset(), a1, a2)
+	c, s1, _ := twoServers(t, sendingHeadset(), disconnectedHeadset(), a1, a2)
 
 	res, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return true })
 	if err != nil {
@@ -58,10 +76,62 @@ func TestPlayHere(t *testing.T) {
 	}
 }
 
+// A headset can stay with a connected but idle source and ignore this
+// machine, so an idle server lets go too.
+func TestPlayHereReleasesIdle(t *testing.T) {
+	fastPlayHere(t)
+	a1, a2 := fakebt.NewAudio(), fakebt.NewAudio()
+	c, s1, _ := twoServers(t, idleHeadset(), disconnectedHeadset(), a1, a2)
+
+	res, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Released, []string{s1.addr}) || len(res.Failed) != 0 {
+		t.Fatalf("result: %+v", res)
+	}
+	want := []string{"release " + headset.Address + " 10s", "restore " + headset.Address}
+	if got := a1.Calls(); !reflect.DeepEqual(got, want) {
+		t.Errorf("server 1 calls: %v, want %v", got, want)
+	}
+	if got := a2.Calls(); len(got) != 0 {
+		t.Errorf("server 2 touched: %v", got)
+	}
+}
+
+// A server with the device connected but no audio card has nothing to let
+// go of; it is skipped, not reported as a failure.
+func TestPlayHereSkipsNoCard(t *testing.T) {
+	fastPlayHere(t)
+	a1, a2 := fakebt.NewAudio(), fakebt.NewAudio()
+	a2.FailRelease = audio.ErrNoCard
+	c, s1, _ := twoServers(t, idleHeadset(), noTransportHeadset(), a1, a2)
+
+	res, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(res.Released, []string{s1.addr}) || len(res.Failed) != 0 {
+		t.Fatalf("result: %+v", res)
+	}
+}
+
+func TestPlayHereOnlyNoCard(t *testing.T) {
+	fastPlayHere(t)
+	a1 := fakebt.NewAudio()
+	a1.FailRelease = audio.ErrNoCard
+	c, _, _ := twoServers(t, noTransportHeadset(), disconnectedHeadset(), a1, fakebt.NewAudio())
+
+	_, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return true })
+	if !errors.Is(err, ErrNotHeldElsewhere) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestPlayHereNotHeld(t *testing.T) {
 	fastPlayHere(t)
 	a1, a2 := fakebt.NewAudio(), fakebt.NewAudio()
-	c, _, _ := twoServers(t, idleHeadset(), idleHeadset(), a1, a2)
+	c, _, _ := twoServers(t, disconnectedHeadset(), disconnectedHeadset(), a1, a2)
 
 	_, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return true })
 	if !errors.Is(err, ErrNotHeldElsewhere) {
@@ -75,7 +145,7 @@ func TestPlayHereNotHeld(t *testing.T) {
 func TestPlayHereNothingHere(t *testing.T) {
 	fastPlayHere(t)
 	a1, a2 := fakebt.NewAudio(), fakebt.NewAudio()
-	c, _, _ := twoServers(t, sendingHeadset(), idleHeadset(), a1, a2)
+	c, _, _ := twoServers(t, sendingHeadset(), disconnectedHeadset(), a1, a2)
 
 	_, err := c.PlayHere(context.Background(), headset.Address, func(context.Context) bool { return false })
 	if !errors.Is(err, ErrNothingPlayingHere) {
@@ -111,7 +181,7 @@ func TestPlayHereOneHolderUnreachable(t *testing.T) {
 func TestPlayHereCancelledDoesNotRestore(t *testing.T) {
 	fastPlayHere(t)
 	a1 := fakebt.NewAudio()
-	c, _, _ := twoServers(t, sendingHeadset(), idleHeadset(), a1, fakebt.NewAudio())
+	c, _, _ := twoServers(t, sendingHeadset(), disconnectedHeadset(), a1, fakebt.NewAudio())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	_, err := c.PlayHere(ctx, headset.Address, func(context.Context) bool { cancel(); return false })
